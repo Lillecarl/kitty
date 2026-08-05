@@ -1195,11 +1195,13 @@ def glfw_init_env(
     ans.sources = sinfo['common']['sources'] + module_sources
     ans.all_headers = [x for x in os.listdir(glfw_base) if x.endswith('.h')]
 
-    if module in ('x11', 'wayland'):
+    if module in ('x11', 'wayland', 'server'):
         ans.cflags.append('-pthread')
         ans.ldpaths.extend('-pthread -lm'.split())
         if not is_openbsd:
             ans.ldpaths.extend('-lrt -ldl'.split())
+
+    if module in ('x11', 'wayland'):
         major, minor = pkg_version('xkbcommon')
         if (major, minor) < (0, 5):
             raise SystemExit('libxkbcommon >= 0.5 required')
@@ -1269,7 +1271,7 @@ def build_wayland_protocols(
 
 
 def compile_glfw(compilation_database: CompilationDatabase, build_dsym: bool = False) -> None:
-    modules = 'cocoa' if is_macos else 'x11 wayland'
+    modules = 'cocoa server' if is_macos else 'x11 wayland server'
     for module in modules.split():
         try:
             genv = glfw_init_env(env, pkg_config, pkg_version, at_least_version, test_compile, module)

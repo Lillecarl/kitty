@@ -94,21 +94,23 @@ createNativeWindow(_GLFWwindow *window, const _GLFWwndconfig *wndconfig, const _
 //////////////////////////////////////////////////////////////////////////
 
 int
-_glfwPlatformCreateWindow(_GLFWwindow *window, const _GLFWwndconfig *wndconfig, const _GLFWctxconfig *ctxconfig, const _GLFWfbconfig *fbconfig) {
+_glfwPlatformCreateWindow(
+    _GLFWwindow *window,
+    const _GLFWwndconfig *wndconfig,
+    const _GLFWctxconfig *ctxconfig,
+    const _GLFWfbconfig *fbconfig,
+    const GLFWLayerShellConfig *lsc UNUSED) {
     if (!createNativeWindow(window, wndconfig, fbconfig)) return false;
 
-    if (ctxconfig->client != GLFW_NO_API) {
-        if (ctxconfig->source == GLFW_NATIVE_CONTEXT_API || ctxconfig->source == GLFW_OSMESA_CONTEXT_API) {
-            if (!_glfwInitOSMesa()) return false;
-            if (!_glfwCreateContextOSMesa(window, ctxconfig, fbconfig)) return false;
-        } else {
-            _glfwInputError(GLFW_API_UNAVAILABLE, "Null: EGL not available");
-            return false;
-        }
-    }
+    // This backend deliberately provides no GL context. It exists so that a
+    // server can hold terminal state on a machine with no GPU, and rendering
+    // happens on the attached client instead. Creating a software context here
+    // would pull in OSMesa and rasterize output that nobody ever reads, so the
+    // requested client API is ignored.
+    (void)ctxconfig;
 
     if (window->monitor) {
-        _glfwPlatformShowWindow(window);
+        _glfwPlatformShowWindow(window, false);
         _glfwPlatformFocusWindow(window);
         acquireMonitor(window);
     }
@@ -337,7 +339,7 @@ _glfwPlatformRawMouseMotionSupported(void) {
 }
 
 void
-_glfwPlatformShowWindow(_GLFWwindow *window) {
+_glfwPlatformShowWindow(_GLFWwindow *window, bool move_to_active_screen UNUSED) {
     window->null.visible = true;
 }
 
@@ -396,17 +398,35 @@ _glfwPlatformWindowVisible(_GLFWwindow *window) {
     return window->null.visible;
 }
 
-void
-_glfwPlatformPollEvents(void) {}
+// There is no display to read from, so an event tick is only timers and
+// whatever file descriptors the embedder has registered. A negative timeout
+// blocks until one of those becomes ready.
+static void
+handleEvents(monotonic_t timeout) {
+    EventLoopData *eld = &_glfw.null.eventLoopData;
+    pollForEvents(eld, timeout, NULL);
+    if (eld->wakeup_fd_ready) check_for_wakeup_events(eld);
+}
 
 void
-_glfwPlatformWaitEvents(void) {}
+_glfwPlatformPollEvents(void) {
+    handleEvents(0);
+}
 
 void
-_glfwPlatformWaitEventsTimeout(monotonic_t timeout UNUSED) {}
+_glfwPlatformWaitEvents(void) {
+    handleEvents(-1);
+}
 
 void
-_glfwPlatformPostEmptyEvent(void) {}
+_glfwPlatformWaitEventsTimeout(monotonic_t timeout) {
+    handleEvents(timeout);
+}
+
+void
+_glfwPlatformPostEmptyEvent(void) {
+    wakeupEventLoop(&_glfw.null.eventLoopData);
+}
 
 void
 _glfwPlatformGetCursorPos(_GLFWwindow *window, double *xpos, double *ypos) {
@@ -429,7 +449,7 @@ _glfwPlatformCreateCursor(_GLFWcursor *cursor UNUSED, const GLFWimage *image UNU
 }
 
 int
-_glfwPlatformCreateStandardCursor(_GLFWcursor *cursor UNUSED, int shape UNUSED) {
+_glfwPlatformCreateStandardCursor(_GLFWcursor *cursor UNUSED, GLFWCursorShape shape UNUSED) {
     return true;
 }
 
@@ -461,111 +481,116 @@ _glfwPlatformChangeDragImage(const GLFWimage *thumbnail) {
     return 0;
 }
 
-const char **
-_glfwPlatformGetDropMimeTypes(GLFWDropData *drop UNUSED, int *count) {
-    if (count) *count = 0;
-    return NULL;
+size_t
+_glfwInputDropEventStub(void) {
+    return 0;
 }
 
+void
+_glfwPlatformRequestDropUpdate(_GLFWwindow *window UNUSED) {}
+
 ssize_t
-_glfwPlatformReadDropData(GLFWDropData *drop UNUSED, const char *mime UNUSED, void *buffer UNUSED, size_t capacity UNUSED, monotonic_t timeout UNUSED) {
+_glfwPlatformReadAvailableDropData(GLFWwindow *w UNUSED, GLFWDropEvent *ev UNUSED, char *buffer UNUSED, size_t sz UNUSED) {
     return -ENOENT;
 }
 
 void
-_glfwPlatformFinishDrop(GLFWDropData *drop, GLFWDragOperationType operation UNUSED, bool success UNUSED) {
-    if (!drop) return;
-    // Free the heap-allocated drop data structure
-    free(drop);
+_glfwPlatformEndDrop(GLFWwindow *w UNUSED, GLFWDragOperationType op UNUSED) {}
+
+int
+_glfwPlatformRequestDropData(_GLFWwindow *window UNUSED, const char *mime UNUSED) {
+    return ENOTSUP;
+}
+
+// There is no windowing system here, so none of the following can be
+// satisfied locally. In server mode the attached client owns the clipboard,
+// the window chrome and the keyboard, so these become client RPCs rather than
+// platform calls. Until that exists they report "unsupported" honestly instead
+// of pretending to succeed.
+
+void
+_glfwPlatformSetClipboard(GLFWClipboardType t UNUSED) {}
+
+void
+_glfwPlatformGetClipboard(GLFWClipboardType clipboard_type UNUSED, const char *mime_type UNUSED, GLFWclipboardwritedatafun write_data, void *object) {
+    // Report end-of-data at once so callers do not wait on a reply.
+    if (write_data) write_data(object, NULL, 0);
+}
+
+bool
+_glfwPlatformToggleFullscreen(_GLFWwindow *w UNUSED, unsigned int flags UNUSED) {
+    return false;
+}
+
+bool
+_glfwPlatformIsFullscreen(_GLFWwindow *w UNUSED, unsigned int flags UNUSED) {
+    return false;
+}
+
+bool
+_glfwPlatformSetLayerShellConfig(_GLFWwindow *window UNUSED, const GLFWLayerShellConfig *value UNUSED) {
+    return false;
+}
+
+const GLFWLayerShellConfig *
+_glfwPlatformGetLayerShellConfig(_GLFWwindow *window UNUSED) {
+    return NULL;
+}
+
+bool
+_glfwPlatformGrabKeyboard(bool grab UNUSED) {
+    return false;
+}
+
+int
+_glfwPlatformSetWindowBlur(_GLFWwindow *handle UNUSED, int value UNUSED) {
+    return 0;
 }
 
 void
-_glfwPlatformSetClipboardString(const char *string) {
-    char *copy = _glfw_strdup(string);
-    free(_glfw.null.clipboardString);
-    _glfw.null.clipboardString = copy;
+_glfwPlatformInputColorScheme(GLFWColorScheme scheme UNUSED) {}
+
+// Public entry points that the display backends implement against a desktop
+// session. A headless server has none, so it reports the feature as absent.
+// Notifications and the colour scheme belong to the attached client.
+
+GLFWAPI bool
+glfwIsLayerShellSupported(void) {
+    return false;
 }
 
-const char *
-_glfwPlatformGetClipboardString(void) {
-    return _glfw.null.clipboardString;
+GLFWAPI int
+glfwGetNativeKeyForName(const char *keyName UNUSED, bool caseSensitive UNUSED) {
+    return 0;
 }
 
-const char *
-_glfwPlatformGetNativeKeyName(int native_key) {
-    switch (scancode) {
-        case GLFW_KEY_APOSTROPHE: return "'";
-        case GLFW_KEY_COMMA: return ",";
-        case GLFW_KEY_MINUS:
-        case GLFW_KEY_KP_SUBTRACT: return "-";
-        case GLFW_KEY_PERIOD:
-        case GLFW_KEY_KP_DECIMAL: return ".";
-        case GLFW_KEY_SLASH:
-        case GLFW_KEY_KP_DIVIDE: return "/";
-        case GLFW_KEY_SEMICOLON: return ";";
-        case GLFW_KEY_EQUAL:
-        case GLFW_KEY_KP_EQUAL: return "=";
-        case GLFW_KEY_LEFT_BRACKET: return "[";
-        case GLFW_KEY_RIGHT_BRACKET: return "]";
-        case GLFW_KEY_KP_MULTIPLY: return "*";
-        case GLFW_KEY_KP_ADD: return "+";
-        case GLFW_KEY_BACKSLASH:
-        case GLFW_KEY_WORLD_1:
-        case GLFW_KEY_WORLD_2: return "\\";
-        case GLFW_KEY_0:
-        case GLFW_KEY_KP_0: return "0";
-        case GLFW_KEY_1:
-        case GLFW_KEY_KP_1: return "1";
-        case GLFW_KEY_2:
-        case GLFW_KEY_KP_2: return "2";
-        case GLFW_KEY_3:
-        case GLFW_KEY_KP_3: return "3";
-        case GLFW_KEY_4:
-        case GLFW_KEY_KP_4: return "4";
-        case GLFW_KEY_5:
-        case GLFW_KEY_KP_5: return "5";
-        case GLFW_KEY_6:
-        case GLFW_KEY_KP_6: return "6";
-        case GLFW_KEY_7:
-        case GLFW_KEY_KP_7: return "7";
-        case GLFW_KEY_8:
-        case GLFW_KEY_KP_8: return "8";
-        case GLFW_KEY_9:
-        case GLFW_KEY_KP_9: return "9";
-        case GLFW_KEY_A: return "a";
-        case GLFW_KEY_B: return "b";
-        case GLFW_KEY_C: return "c";
-        case GLFW_KEY_D: return "d";
-        case GLFW_KEY_E: return "e";
-        case GLFW_KEY_F: return "f";
-        case GLFW_KEY_G: return "g";
-        case GLFW_KEY_H: return "h";
-        case GLFW_KEY_I: return "i";
-        case GLFW_KEY_J: return "j";
-        case GLFW_KEY_K: return "k";
-        case GLFW_KEY_L: return "l";
-        case GLFW_KEY_M: return "m";
-        case GLFW_KEY_N: return "n";
-        case GLFW_KEY_O: return "o";
-        case GLFW_KEY_P: return "p";
-        case GLFW_KEY_Q: return "q";
-        case GLFW_KEY_R: return "r";
-        case GLFW_KEY_S: return "s";
-        case GLFW_KEY_T: return "t";
-        case GLFW_KEY_U: return "u";
-        case GLFW_KEY_V: return "v";
-        case GLFW_KEY_W: return "w";
-        case GLFW_KEY_X: return "x";
-        case GLFW_KEY_Y: return "y";
-        case GLFW_KEY_Z: return "z";
-    }
+GLFWAPI GLFWColorScheme
+glfwGetCurrentSystemColorTheme(bool query_if_unintialized UNUSED) {
+    return GLFW_COLOR_SCHEME_NO_PREFERENCE;
+}
 
+// The callback types are spelled out rather than taken from linux_notify.h,
+// because that header pulls in <dbus/dbus.h> and the headless backend must not
+// depend on a session bus. Keep these in step with linux_notify.h.
+
+GLFWAPI unsigned long long
+glfwDBusUserNotify(const GLFWDBUSNotificationData *n UNUSED, void (*callback)(unsigned long long, uint32_t, void *) UNUSED, void *data UNUSED) {
+    return 0;
+}
+
+GLFWAPI void
+glfwDBusSetUserNotificationHandler(void (*handler)(uint32_t, int, const char *) UNUSED) {}
+
+const char *
+_glfwPlatformGetNativeKeyName(int native_key UNUSED) {
+    // No physical keyboard is attached to a headless backend, so there is no
+    // platform-specific name to report. Input arrives from an attached client.
     return NULL;
 }
 
 int
-_glfwPlatformGetNativeKeyForKey(int key) {
-    return key;
+_glfwPlatformGetNativeKeyForKey(uint32_t key) {
+    return (int)key;
 }
 
 void

@@ -1042,11 +1042,7 @@ glfwUpdateIMEState(GLFWwindow *handle, const GLFWIMEUpdateEvent *ev) {
     _glfwPlatformUpdateIMEState(window, ev);
 #else
     (void)window;
-    (void)which;
-    (void)a;
-    (void)b;
-    (void)c;
-    (void)d;
+    (void)ev;
 #endif
 }
 

@@ -32,12 +32,12 @@
 #define _GLFW_PLATFORM_MONITOR_STATE _GLFWmonitorNull null
 
 #define _GLFW_PLATFORM_CONTEXT_STATE
-#define _GLFW_PLATFORM_CURSOR_STATE
+#define _GLFW_PLATFORM_CURSOR_STATE int dummy_cursor_state
 #define _GLFW_PLATFORM_LIBRARY_CONTEXT_STATE
 
-#include "posix_time.h"
 #include "posix_thread.h"
 #include "null_joystick.h"
+#include "backend_utils.h"
 
 #if defined(_GLFW_WIN32)
 #define _glfw_dlopen(name) LoadLibraryA(name)
@@ -80,6 +80,7 @@ typedef struct _GLFWlibraryNull {
     int ycursor;
     char *clipboardString;
     _GLFWwindow *focusedWindow;
+    EventLoopData eventLoopData;
 } _GLFWlibraryNull;
 
 void _glfwPollMonitorsNull(void);

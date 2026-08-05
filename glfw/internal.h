@@ -203,7 +203,8 @@ typedef VkResult(APIENTRY *PFN_vkEnumerateInstanceExtensionProperties)(const cha
 #include "x11_platform.h"
 #elif defined(_GLFW_WAYLAND)
 #include "wl_platform.h"
-#elif defined(_GLFW_OSMESA)
+#elif defined(_GLFW_OSMESA) || defined(_GLFW_SERVER)
+// The headless backend kitty uses for server mode shares the null platform.
 #include "null_platform.h"
 #else
 #error "No supported window creation API selected"

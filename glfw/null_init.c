@@ -37,8 +37,16 @@
 //////////////////////////////////////////////////////////////////////////
 
 int
-_glfwPlatformInit(void) {
+_glfwPlatformInit(bool *supports_window_occlusion) {
+    *supports_window_occlusion = false;
     _glfwPollMonitorsNull();
+    // There is no display connection, so the poll set holds only the wakeup
+    // and timer machinery. poll() ignores a negative fd, which is what the
+    // display slot stays at for the lifetime of this backend.
+    if (!initPollData(&_glfw.null.eventLoopData, -1)) {
+        _glfwInputError(GLFW_PLATFORM_ERROR, "Null: Failed to initialize event loop data");
+        return false;
+    }
 
     return true;
 }
@@ -46,10 +54,16 @@ _glfwPlatformInit(void) {
 void
 _glfwPlatformTerminate(void) {
     free(_glfw.null.clipboardString);
+    _glfw.null.clipboardString = NULL;
+    finalizePollData(&_glfw.null.eventLoopData);
     _glfwTerminateOSMesa();
 }
 
+#define GLFW_LOOP_BACKEND null
+#include "main_loop.h"
+
 const char *
 _glfwPlatformGetVersionString(void) {
-    return _GLFW_VERSION_NUMBER " null OSMesa";
+    (void)keep_going;
+    return _GLFW_VERSION_NUMBER " null headless";
 }
