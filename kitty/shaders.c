@@ -112,6 +112,20 @@ clear_current_framebuffer(void) {
 SPRITE_MAP_HANDLE
 alloc_sprite_map(void) {
     if (!max_texture_size) {
+        if (global_state.is_server) {
+            // No GL to ask, and nothing ever uploads sprites here. Use the
+            // minimum a GL 3.1 implementation must support, so that the sprite
+            // index arithmetic stays in range.
+            max_texture_size = 1024;
+            max_array_texture_layers = 256;
+            sprite_tracker_set_limits(max_texture_size, max_array_texture_layers);
+            SpriteMap *sans = calloc(1, sizeof(SpriteMap));
+            if (!sans) fatal("Out of memory allocating a sprite map");
+            *sans = NEW_SPRITE_MAP;
+            sans->max_texture_size = max_texture_size;
+            sans->max_array_texture_layers = max_array_texture_layers;
+            return (SPRITE_MAP_HANDLE)sans;
+        }
         glGetIntegerv(GL_MAX_TEXTURE_SIZE, &(max_texture_size));
         glGetIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS, &(max_array_texture_layers));
 #ifdef __APPLE__
@@ -285,6 +299,9 @@ ensure_sprite_map(FONTS_DATA_HANDLE fg) {
 
 void
 send_sprite_to_gpu(FONTS_DATA_HANDLE fg, sprite_index idx, pixel *buf, sprite_index decoration_idx) {
+    // The only path that uploads glyphs to the GPU. In server mode there is no
+    // GPU; the attached client rasterizes from its own fonts.
+    if (global_state.is_server) return;
     SpriteMap *sprite_map = (SpriteMap *)fg->sprite_map;
     unsigned int xnum, ynum, znum, x, y, z;
 #define dm (sprite_map->decorations_map)
@@ -712,6 +729,9 @@ bind_shader_globals_to_current_context(void) {
 
 ssize_t
 create_cell_vao(void) {
+    // The attribute setup below queries the cell program, which is never
+    // loaded in server mode.
+    if (global_state.is_server) return -1;
     ssize_t vao_idx = create_vao();
 #define A(name, size, dtype, offset, stride) \
     add_attribute_to_vao(                    \
@@ -2089,6 +2109,9 @@ populate_border_colors(GLuint colors[9], color_type active_window_bg, unsigned i
 
 ssize_t
 create_border_vao(void) {
+    // The attribute setup below queries the border program, which is never
+    // loaded in server mode.
+    if (global_state.is_server) return -1;
     ssize_t vao_idx = create_vao();
 
     add_buffer_to_vao(vao_idx, GL_ARRAY_BUFFER);

@@ -2348,7 +2348,9 @@ send_prerendered_sprites_for_window(OSWindow *w) {
     FontGroup *fg = (FontGroup *)w->fonts_data;
     if (!fg->sprite_map) {
         fg->sprite_map = alloc_sprite_map();
-        send_prerendered_sprites(fg);
+        // Nothing renders in server mode, so skip rasterizing and uploading
+        // the box-drawing and decoration sprites.
+        if (!global_state.is_server) send_prerendered_sprites(fg);
     }
 }
 

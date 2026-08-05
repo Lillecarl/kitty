@@ -1083,8 +1083,8 @@ PYWRAP0(get_options) {
 
 PYWRAP1(set_options) {
     PyObject *opts;
-    int is_wayland = 0, debug_rendering = 0, debug_font_fallback = 0;
-    PA("O|ppp", &opts, &is_wayland, &debug_rendering, &debug_font_fallback);
+    int is_wayland = 0, debug_rendering = 0, debug_font_fallback = 0, is_server = 0;
+    PA("O|pppp", &opts, &is_wayland, &debug_rendering, &debug_font_fallback, &is_server);
     if (opts == Py_None) {
         Py_CLEAR(global_state.options_object);
         Py_RETURN_NONE;
@@ -1095,6 +1095,7 @@ PYWRAP1(set_options) {
 #endif
     global_state.is_wayland = is_wayland ? true : false;
     if (global_state.is_wayland) global_state.has_render_frames = true;
+    global_state.is_server = is_server ? true : false;
     global_state.debug_rendering = debug_rendering ? true : false;
     global_state.debug_font_fallback = debug_font_fallback ? true : false;
     if (!convert_opts_from_python_opts(opts, &global_state.opts)) return NULL;

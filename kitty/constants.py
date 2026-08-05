@@ -235,6 +235,14 @@ def detect_if_wayland_ok() -> bool:
     return False
 
 
+def is_server_mode() -> bool:
+    """True when kitty runs headless, holding terminal state for a remote client.
+
+    Set by init_glfw() when the headless backend is selected.
+    """
+    return bool(getattr(is_server_mode, 'ans', False))
+
+
 def is_wayland(opts: Optional['Options'] = None) -> bool:
     if is_macos:
         return False

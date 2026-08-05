@@ -1458,6 +1458,9 @@ set_os_window_icon(PyObject UNUSED *self, PyObject *args) {
 
 void *
 make_os_window_context_current(OSWindow *w) {
+    // No window has a context in server mode, so every caller of this is doing
+    // GPU work that does not happen here.
+    if (global_state.is_server) return NULL;
     GLFWwindow *current_context = glfwGetCurrentContext();
     if (w->handle != current_context) {
         glfwMakeContextCurrent(w->handle);
@@ -2041,6 +2044,7 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
 #ifndef __APPLE__
         glfwConfigureMomentumScroller(OPT(momentum_scroll), -1, -1, 0);
 #endif
+        if (global_state.is_server) glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, OPENGL_REQUIRED_VERSION_MAJOR);
         glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, OPENGL_REQUIRED_VERSION_MINOR);
         glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, true);
@@ -2140,7 +2144,7 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
         return NULL;                                                                                                                                \
     }
 
-        temp_window = glfwCreateWindow(640, 480, "temp", NULL, common_context, NULL);
+        temp_window = glfwCreateWindow(640, 480, "temp", NULL, global_state.is_server ? NULL : common_context, NULL);
         if (temp_window == NULL) glfw_failure;
         get_window_content_scale(temp_window, &xscale, &yscale, &xdpi, &ydpi);
     }
@@ -2170,7 +2174,8 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
         glfwWaylandSetInitialWindowSizeCallback(wayland_initial_size_callback);
         initial_window_size_py_callback = get_window_size;
     }
-    GLFWwindow *glfw_window = glfwCreateWindow(width, height, title, NULL, temp_window ? temp_window : common_context, lsc);
+    GLFWwindow *glfw_window =
+        glfwCreateWindow(width, height, title, NULL, global_state.is_server ? NULL : (temp_window ? temp_window : common_context), lsc);
     initial_window_size_py_callback = NULL;
     if (temp_window) {
         glfwDestroyWindow(temp_window);
@@ -2180,15 +2185,20 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
 #undef glfw_failure
     // Set titlebar-only mode before the window becomes visible
     if (global_state.is_wayland && (OPT(hide_window_decorations) & 2) && glfwWaylandSetTitlebarHidden) { glfwWaylandSetTitlebarHidden(glfw_window, true); }
-    glfwMakeContextCurrent(glfw_window);
-    if (is_first_window) initialize_gpu();
-    bool is_semi_transparent = glfwGetWindowAttrib(glfw_window, GLFW_TRANSPARENT_FRAMEBUFFER);
-    // blank the window once so that there is no initial flash of color
-    // changing, in case the background color is not black
-    blank_canvas(is_semi_transparent ? OPT(background_opacity) : 1.0f, OPT(background), true);
-    apply_swap_interval(-1);
-    // On Wayland the initial swap is allowed only after the first XDG configure event
-    if (glfwAreSwapsAllowed(glfw_window)) glfwSwapBuffers(glfw_window);
+    bool is_semi_transparent = false;
+    // In server mode there is no GL context at all, so every call below would
+    // dereference a NULL function pointer. The attached client renders instead.
+    if (!global_state.is_server) {
+        glfwMakeContextCurrent(glfw_window);
+        if (is_first_window) initialize_gpu();
+        is_semi_transparent = glfwGetWindowAttrib(glfw_window, GLFW_TRANSPARENT_FRAMEBUFFER);
+        // blank the window once so that there is no initial flash of color
+        // changing, in case the background color is not black
+        blank_canvas(is_semi_transparent ? OPT(background_opacity) : 1.0f, OPT(background), true);
+        apply_swap_interval(-1);
+        // On Wayland the initial swap is allowed only after the first XDG configure event
+        if (glfwAreSwapsAllowed(glfw_window)) glfwSwapBuffers(glfw_window);
+    }
     glfwSetInputMode(glfw_window, GLFW_LOCK_KEY_MODS, true);
     PyObject *pret = PyObject_CallFunction(pre_show_callback, "N", native_window_handle(glfw_window));
     if (pret == NULL) return NULL;
@@ -2209,16 +2219,18 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
         }
     }
     if (is_first_window) {
-        PyObject *ret = PyObject_CallNoArgs(load_programs);
-        if (ret == NULL) return NULL;
-        Py_DECREF(ret);
-        get_platform_dependent_config_values(glfw_window);
-        if (!global_state.supports_framebuffer_srgb) {
-            log_error("The OpenGL drivers dont support GL_FRAMEBUFFER_SRGB this will cause a small rendering performance penalty");
+        if (!global_state.is_server) {
+            PyObject *ret = PyObject_CallNoArgs(load_programs);
+            if (ret == NULL) return NULL;
+            Py_DECREF(ret);
+            get_platform_dependent_config_values(glfw_window);
+            if (!global_state.supports_framebuffer_srgb) {
+                log_error("The OpenGL drivers dont support GL_FRAMEBUFFER_SRGB this will cause a small rendering performance penalty");
+            }
         }
         is_first_window = false;
     }
-    bind_shader_globals_to_current_context();
+    if (!global_state.is_server) bind_shader_globals_to_current_context();
     OSWindow *w = add_os_window();
     w->handle = glfw_window;
     w->disallow_title_changes = disallow_override_title;

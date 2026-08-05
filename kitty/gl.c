@@ -564,6 +564,8 @@ static VAO vaos[4 * MAX_CHILDREN + 10] = {{0}};
 
 ssize_t
 create_vao(void) {
+    // Server mode has no GL context, and nothing ever renders these.
+    if (global_state.is_server) return -1;
     GLuint vao_id;
     glGenVertexArrays(1, &vao_id);
     for (size_t i = 0; i < sizeof(vaos) / sizeof(vaos[0]); i++) {
@@ -581,6 +583,8 @@ create_vao(void) {
 
 size_t
 add_buffer_to_vao(ssize_t vao_idx, GLenum usage) {
+    // create_vao() hands out -1 when there is no GL context (server mode).
+    if (vao_idx < 0) return 0;
     VAO *vao = vaos + vao_idx;
     if (vao->num_buffers >= sizeof(vao->buffers) / sizeof(vao->buffers[0])) { fatal("Too many buffers in a single VAO"); }
     ssize_t buf = create_buffer(usage);
@@ -611,11 +615,15 @@ add_located_attribute_to_vao(ssize_t vao_idx, GLint aloc, GLint size, GLenum dat
 
 void
 add_attribute_to_vao(ssize_t vao_idx, int location, GLint size, GLenum data_type, GLsizei stride, void *offset, GLuint divisor) {
+    // create_vao() hands out -1 when there is no GL context (server mode).
+    if (vao_idx < 0) return;
     add_located_attribute_to_vao(vao_idx, location, size, data_type, stride, offset, divisor);
 }
 
 void
 set_vao_attribute(ssize_t vao_idx, size_t buffer_idx, int location, GLint size, GLenum data_type, GLsizei stride, void *offset, GLuint divisor) {
+    // create_vao() hands out -1 when there is no GL context (server mode).
+    if (vao_idx < 0) return;
     // (Re)configure an attribute pointer that reads from a specific buffer of
     // the VAO (unlike add_attribute_to_vao which always uses the last added
     // buffer). The VAO must be bound before calling this.
@@ -638,6 +646,8 @@ set_vao_attribute(ssize_t vao_idx, size_t buffer_idx, int location, GLint size, 
 
 void
 remove_vao(ssize_t vao_idx) {
+    // create_vao() hands out -1 when there is no GL context to allocate from.
+    if (vao_idx < 0) return;
     VAO *vao = vaos + vao_idx;
     while (vao->num_buffers) {
         vao->num_buffers--;
@@ -649,6 +659,8 @@ remove_vao(ssize_t vao_idx) {
 
 void
 bind_vertex_array(ssize_t vao_idx) {
+    // create_vao() hands out -1 when there is no GL context (server mode).
+    if (vao_idx < 0) return;
     glBindVertexArray(vaos[vao_idx].id);
 }
 
@@ -659,6 +671,8 @@ unbind_vertex_array(void) {
 
 ssize_t
 alloc_vao_buffer(ssize_t vao_idx, GLsizeiptr size, size_t bufnum, GLenum usage) {
+    // create_vao() hands out -1 when there is no GL context (server mode).
+    if (vao_idx < 0) return -1;
     ssize_t buf_idx = vaos[vao_idx].buffers[bufnum];
     bind_buffer(buf_idx);
     alloc_buffer(buf_idx, size, usage);
@@ -667,6 +681,8 @@ alloc_vao_buffer(ssize_t vao_idx, GLsizeiptr size, size_t bufnum, GLenum usage) 
 
 void *
 map_vao_buffer_for_write_only(ssize_t vao_idx, size_t bufnum, int offset, unsigned size) {
+    // create_vao() hands out -1 when there is no GL context (server mode).
+    if (vao_idx < 0) return NULL;
     ssize_t buf_idx = vaos[vao_idx].buffers[bufnum];
     bind_buffer(buf_idx);
     return map_buffer_range(buf_idx, GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT, offset, size);
@@ -674,18 +690,24 @@ map_vao_buffer_for_write_only(ssize_t vao_idx, size_t bufnum, int offset, unsign
 
 void *
 alloc_and_map_vao_buffer(ssize_t vao_idx, GLsizeiptr size, size_t bufnum, bool frequently_updated) {
+    // create_vao() hands out -1 when there is no GL context (server mode).
+    if (vao_idx < 0) return NULL;
     ssize_t buf_idx = alloc_vao_buffer(vao_idx, size, bufnum, frequently_updated ? GL_STREAM_DRAW : GL_STATIC_DRAW);
     return map_buffer(buf_idx, GL_WRITE_ONLY);
 }
 
 void
 bind_vao_uniform_buffer(ssize_t vao_idx, size_t bufnum, GLuint block_index) {
+    // create_vao() hands out -1 when there is no GL context (server mode).
+    if (vao_idx < 0) return;
     ssize_t buf_idx = vaos[vao_idx].buffers[bufnum];
     glBindBufferBase(GL_UNIFORM_BUFFER, block_index, buffers[buf_idx].id);
 }
 
 void
 unmap_vao_buffer(ssize_t vao_idx, size_t bufnum) {
+    // create_vao() hands out -1 when there is no GL context (server mode).
+    if (vao_idx < 0) return;
     ssize_t buf_idx = vaos[vao_idx].buffers[bufnum];
     unmap_buffer(buf_idx);
     unbind_buffer(buf_idx);
@@ -693,6 +715,8 @@ unmap_vao_buffer(ssize_t vao_idx, size_t bufnum) {
 
 void
 copy_vao_buffer_region(ssize_t vao_idx, size_t src_bufnum, GLintptr src_off, size_t dst_bufnum, GLintptr dst_off, GLsizeiptr size) {
+    // create_vao() hands out -1 when there is no GL context (server mode).
+    if (vao_idx < 0) return;
     ssize_t src_buf = vaos[vao_idx].buffers[src_bufnum];
     ssize_t dst_buf = vaos[vao_idx].buffers[dst_bufnum];
     glBindBuffer(GL_COPY_READ_BUFFER, buffers[src_buf].id);
@@ -704,6 +728,8 @@ copy_vao_buffer_region(ssize_t vao_idx, size_t src_bufnum, GLintptr src_off, siz
 
 const void *
 map_vao_buffer_for_reading(ssize_t vao_idx, size_t bufnum) {
+    // create_vao() hands out -1 when there is no GL context (server mode).
+    if (vao_idx < 0) return NULL;
     ssize_t buf_idx = vaos[vao_idx].buffers[bufnum];
     bind_buffer(buf_idx);
     return map_buffer(buf_idx, GL_READ_ONLY);

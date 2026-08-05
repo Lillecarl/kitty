@@ -1125,6 +1125,9 @@ render_os_window(OSWindow *w, monotonic_t now, bool scan_for_animated_images) {
 
 static void
 render(monotonic_t now, bool input_read) {
+    // Server mode has no GPU and no attached renderer yet. Screens still parse
+    // and stay dirty; the client will ask for their contents.
+    if (global_state.is_server) return;
     EVDBG("input_read: %d, check_for_active_animated_images: %d\n", input_read, global_state.check_for_active_animated_images);
     static monotonic_t last_render_at = MONOTONIC_T_MIN;
     monotonic_t time_since_last_render = last_render_at == MONOTONIC_T_MIN ? OPT(repaint_delay) : now - last_render_at;

@@ -24,6 +24,7 @@ from .constants import (
     glfw_path,
     is_macos,
     is_quick_access_terminal_app,
+    is_server_mode,
     is_wayland,
     kitten_exe,
     kitty_exe,
@@ -102,6 +103,17 @@ def init_glfw_module(glfw_module: str = 'wayland', debug_keyboard: bool = False,
 
 
 def init_glfw(opts: Options, debug_keyboard: bool = False, debug_rendering: bool = False) -> str:
+    # KITTY_GLFW_MODULE selects the headless 'server' backend, which needs no
+    # display connection. Temporary: this becomes a --server flag once server
+    # mode has a CLI.
+    forced = os.environ.get('KITTY_GLFW_MODULE')
+    if forced:
+        # The headless backend is neither Wayland nor X11. Seed the cache that
+        # the no-argument is_wayland() reads, which init_glfw normally fills in.
+        setattr(is_wayland, 'ans', False)
+        setattr(is_server_mode, 'ans', forced == 'server')
+        init_glfw_module(forced, debug_keyboard, debug_rendering, wayland_enable_ime=opts.wayland_enable_ime)
+        return forced
     glfw_module = 'cocoa' if is_macos else ('wayland' if is_wayland(opts) else 'x11')
     init_glfw_module(glfw_module, debug_keyboard, debug_rendering, wayland_enable_ime=opts.wayland_enable_ime)
     return glfw_module
@@ -367,7 +379,7 @@ class AppRunner:
     def __call__(self, opts: Options, args: CLIOptions, bad_lines: Sequence[BadLine] = (), talk_fd: int = -1) -> None:
         if theme_colors.refresh():
             theme_colors.patch_opts(opts, args.debug_rendering)
-        set_options(opts, is_wayland(), args.debug_rendering, args.debug_font_fallback)
+        set_options(opts, is_wayland(), args.debug_rendering, args.debug_font_fallback, is_server_mode())
         try:
             set_font_family(opts, add_builtin_nerd_font=True)
             _run_app(opts, args, bad_lines, talk_fd)
