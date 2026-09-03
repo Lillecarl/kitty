@@ -475,6 +475,16 @@ Used in combination with the :option:`{appname} --single-instance` option. All
 without an actual window, use :option:`{appname} --start-as`=hidden.
 
 
+--server
+type=bool-set
+Run as a server: hold the terminal state, the scrollback and the programs, with
+no display and no GPU. Nothing is rendered and no font is loaded. A kitty client
+attaches over a socket and renders with its own fonts, so combine this with
+:option:`{appname} --listen-on` to give clients somewhere to connect. Unlike
+:option:`{appname} --start-as`=hidden, this needs no display at all, so it runs
+on a machine that has none.
+
+
 --start-as
 type=choices
 default=normal

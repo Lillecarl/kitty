@@ -102,18 +102,15 @@ def init_glfw_module(glfw_module: str = 'wayland', debug_keyboard: bool = False,
     supports_window_occlusion(swo)
 
 
-def init_glfw(opts: Options, debug_keyboard: bool = False, debug_rendering: bool = False) -> str:
-    # KITTY_GLFW_MODULE selects the headless 'server' backend, which needs no
-    # display connection. Temporary: this becomes a --server flag once server
-    # mode has a CLI.
-    forced = os.environ.get('KITTY_GLFW_MODULE')
-    if forced:
+def init_glfw(opts: Options, debug_keyboard: bool = False, debug_rendering: bool = False, server: bool = False) -> str:
+    if server:
         # The headless backend is neither Wayland nor X11. Seed the cache that
-        # the no-argument is_wayland() reads, which init_glfw normally fills in.
+        # the no-argument is_wayland() reads, which the display path fills in
+        # via is_wayland(opts) below.
         setattr(is_wayland, 'ans', False)
-        setattr(is_server_mode, 'ans', forced == 'server')
-        init_glfw_module(forced, debug_keyboard, debug_rendering, wayland_enable_ime=opts.wayland_enable_ime)
-        return forced
+        setattr(is_server_mode, 'ans', True)
+        init_glfw_module('server', debug_keyboard, debug_rendering, wayland_enable_ime=opts.wayland_enable_ime)
+        return 'server'
     glfw_module = 'cocoa' if is_macos else ('wayland' if is_wayland(opts) else 'x11')
     init_glfw_module(glfw_module, debug_keyboard, debug_rendering, wayland_enable_ime=opts.wayland_enable_ime)
     return glfw_module
@@ -649,7 +646,7 @@ def kitty_main(called_from_panel: bool = False) -> None:
     # threads. These threads must not handle the masked signals, to ensure
     # kitty can handle them. See https://github.com/kovidgoyal/kitty/issues/4636
     mask_kitty_signals_process_wide()
-    init_glfw(opts, cli_opts.debug_keyboard, cli_opts.debug_rendering)
+    init_glfw(opts, cli_opts.debug_keyboard, cli_opts.debug_rendering, cli_opts.server)
     try:
         with setup_profiling():
             # Avoid needing to launch threads to reap zombies

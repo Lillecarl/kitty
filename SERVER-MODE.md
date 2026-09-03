@@ -98,9 +98,13 @@ Two traps worth recording:
   `update_os_window_viewport` early-returns on "no change", so a cell size
   change under it would never reach the layout.
 
-Still open before a real client: font size is a client property, so
-`set-client-viewport` is the mechanism but there is no attach protocol carrying
-it yet, and no cell data flows in the other direction.
+`kitty --server` now selects the headless backend directly, so the temporary
+KITTY_GLFW_MODULE hook is gone. Unlike `--start-as`=hidden it needs no display
+at all, and it pairs with `--listen-on`.
+
+Still open before a real client: `set-client-viewport` is the mechanism for the
+handshake, but no attach protocol carries it yet, and no cell data flows in the
+other direction.
 
 Known gap: the server still loads fonts, because `create_os_window` derives
 window geometry from cell metrics. Spike 2 replaces that with client-supplied
@@ -592,8 +596,8 @@ handshake with a declared compatibility window, not a bare equality check.
    `grman_update_layers` placement math client-side, or send cell-coordinate
    placements.
 
-7. **Config split** and session CLI (`kitty --server`, `kitty --attach`,
-   list/kill).
+7. **Config split** and session CLI. `kitty --server` exists; `kitty --attach`
+   and list/kill do not.
 
 ---
 
