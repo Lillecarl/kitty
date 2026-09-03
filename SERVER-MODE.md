@@ -243,10 +243,48 @@ changed, because the geometry now settles during startup instead of one loop
 turn later. That number is a placeholder either way, since a client overrides
 it at attach. What matters is that it now agrees with the window it describes.
 
-Not yet: no cell data crosses the socket. The handshake settles versions,
-compression and geometry; the data channel that carries frames is the next
-piece. An attachment therefore outlives the short remote control connection
-that made it, and gets a real lifetime only when that channel exists.
+**The data channel works, and a client with no display holds a live mirror of
+the session.** That is spike 3's demo, minus the rendering.
+
+`kitty_tests/server_mode.py` runs the whole path: it starts a real server,
+attaches, opens a channel over a real socket, and asserts the client rebuilds
+the output of a command it never ran. It also opens a second OS window and
+watches it start flowing, and lets a second client take the session and watches
+the first be told why.
+
+The channel is the second connection to the same socket described in §3. The
+server tells the two apart by their first bytes, so one SSH forward carries
+everything. `push_to_peer` (`child-monitor.c`) sends unsolicited data and
+reports the queue depth; asked with nothing to send it only reports, which is
+how the sender sees backpressure.
+
+Inside the stream a message is a type byte and then either a window id plus a
+cell payload, or a JSON event. The cell format itself says nothing about which
+window it describes, and it should not: it is the format for one screen.
+
+Three things the plan did not have.
+
+**The pump is a timer, not the `render()` hook.** §3's implementation note said
+to serialize where `render()` returns early in server mode, because the tick
+machinery already paces it. A timer at `repaint_delay` does the same job from
+Python, where the attachment state already lives, and it costs nothing when
+idle, because a clean screen serializes to a bare header and is not sent. The
+`render()` hook stays the better place if the pump ever has to move to C.
+
+**An OS window opened after the attach had the server's default geometry**,
+which is meaningless with no display. So the client's metrics outlive the
+handshake that carried them, lay out new windows too, and the client is told
+about the change with an `os_windows` event, because it cannot see the OS
+windows for itself.
+
+**Bytes arriving in the same packet as the preamble are already stream data.**
+Nothing else would deliver them until the client happened to send more. Not
+reachable yet, because nothing flows from the client, but it would have shown
+up as "the first keystroke after attach is late".
+
+Not yet: nothing flows from the client, so `data_channel_client_message` is a
+stub. Screen modes, cursor visibility and shape, and window titles are not
+carried either — see §7.
 
 Known gap: `attrs.mark` is always zero, because `mark_text_in_line` runs in the
 render pass the server does not run. Marks are presentation config, so they
@@ -607,7 +645,14 @@ a `Screen`: serialization and compression happen on the main thread, and
 finished bytes go to the peer write buffer the way `send_response_to_peer` does
 it. Backpressure is that buffer's level, read by the main thread before it
 serializes. The natural place to serialize is where `render()` returns early in
-server mode, because the existing tick machinery already paces it.
+server mode, because the existing tick machinery already paces it — though the
+implementation uses a timer instead, for the reason in the progress notes.
+
+One wart, inherited rather than chosen: the peer plumbing signals a closed
+connection to Python with the in-band message `peer_death`. A stream chunk
+whose bytes are exactly that would close the channel. The odds are negligible
+inside a compressed stream, and it predates this work, but it is the kind of
+thing an upstream reviewer notices.
 
 ## 3a. Multiple OS windows — yes, and mostly for free
 
@@ -828,13 +873,13 @@ the hello succeeds.
    geometry for a window nobody displays, and layouts respond to a simulated
    resize.
 
-3. **Cell protocol, visible region only.** *(format, compression and handshake
-   done; the data channel is open)* Serializer walking the linebuf and emitting
-   dirty lines as (text, style); the reader rebuilds `Line`s and runs
-   `render_line` locally. The view traversal is deliberately not mirrored — see
-   the progress notes. Still to come: the channel that carries frames, and a
-   real client on the far end. **Demo:** attach from a laptop, see the remote
-   shell, type, detach, reattach, state intact.
+3. **Cell protocol, visible region only.** *(done for output; input is open)*
+   Serializer walking the linebuf and emitting dirty lines as (text, style);
+   the reader rebuilds `Line`s and runs `render_line` locally. The view
+   traversal is deliberately not mirrored — see the progress notes. Still to
+   come: the client to server direction, and a renderer on the far end.
+   **Demo:** attach from a laptop, see the remote shell, type, detach,
+   reattach, state intact.
 
 4. **Client-side scrollback.** Compressed raw-array bulk transfer plus the
    codepoint side table for `ch_is_idx` cells (§2); background history
@@ -872,6 +917,11 @@ keybindings are client-side. All three are in Settled decisions above.
    width, scale and alignment fields it is given. The transport is a unix
    socket over SSH, so the sender is as trusted as the user, but a malformed
    payload should still fail cleanly rather than draw nonsense.
-4. Where do marks live? `attrs.mark` comes from `mark_text_in_line`, which the
+4. What carries the state that is not cells? Screen modes, cursor visibility
+   and shape, and window titles are all things a client must show, and none of
+   them live in a cell. The `os_windows` event covers the layout; the rest need
+   events of their own. The alternate screen only looks right today because
+   switching buffers sets `content_moved`.
+5. Where do marks live? `attrs.mark` comes from `mark_text_in_line`, which the
    server does not run. Marker patterns are config, so the client can apply
    them itself, but then a `scroll_to_next_mark` needs a client-side answer.
