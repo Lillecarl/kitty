@@ -789,6 +789,31 @@ class Boss:
         self.child_monitor.add_child(window.id, window.child.pid, window.child.child_fd, window.screen)
         self.window_id_map[window.id] = window
 
+    def send_key_to_server(self, ev: 'KeyEvent', window: Window | None = None) -> None:
+        """Forward a key this client did not handle to the server.
+
+        Reached from the key path in C, after the shortcut match, so this is
+        what the program running on the server should see. Also reached from
+        Python, for a key that some other part of kitty synthesized.
+        """
+        from .attach import key_event
+
+        client = self.client
+        window = window or self.active_window
+        if client is None or window is None:
+            return
+        client.send(
+            key_event(
+                getattr(window, 'server_window_id', 0),
+                ev.key,
+                shifted_key=ev.shifted_key,
+                alternate_key=ev.alternate_key,
+                mods=ev.mods,
+                action=ev.action,
+                text=ev.text,
+            )
+        )
+
     def add_client_window(self, window: Window) -> None:
         """Register a window that shows a server's screen.
 

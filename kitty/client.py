@@ -104,6 +104,30 @@ class ClientWindow(Window):
     def title(self) -> str:
         return self.override_title or self.client_title or self.child_title
 
+    def send_key_sequence(self, *keys: Any, synthesize_release_events: bool = True) -> None:
+        # Not encoded here. The keyboard protocol flags and the cursor key mode
+        # live on the server's Screen, so the server encodes and this side only
+        # reports. Releases go too, and usually encode to nothing.
+        from .boss import get_boss
+
+        boss = get_boss()
+        for key in keys:
+            boss.send_key_to_server(key, self)
+
+    def write_to_child(self, data: str | bytes | memoryview) -> None:
+        # A paste, a send-text, or anything else that is already text. The
+        # program that receives it runs on the server.
+        from .attach import text_event
+        from .boss import get_boss
+
+        if not data:
+            return
+        client = get_boss().client
+        if client is not None:
+            if isinstance(data, (bytes, memoryview)):
+                data = bytes(data).decode('utf-8', 'replace')
+            client.send(text_event(self.server_window_id, data))
+
     def resize_child(self, current_pty_size: tuple[int, int, int, int]) -> bool:
         # There is no pty on this side. The server owns it, and hears about a
         # resize as a viewport, in cells it decides for itself.
@@ -309,6 +333,16 @@ class Client:
             self.note_titles(event.get('os_windows'))
         elif name == 'superseded':
             log_error(f'Another client took this session: {event.get("client")}')
+            self.close()
+
+    def send(self, message: bytes) -> None:
+        """One event, up the same channel the frames come down."""
+        if self.channel is None:
+            return
+        try:
+            self.channel.sendall(bytes(self.writer.write(message)) if self.writer is not None else struct.pack('<I', len(message)) + message)
+        except OSError as err:
+            log_error(f'Could not send to the kitty server: {err}')
             self.close()
 
     def pump(self, timer_id: int | None = None) -> None:

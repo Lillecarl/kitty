@@ -598,7 +598,12 @@ def set_os_window_cell_size(os_window_id: int, cell_width: int, cell_height: int
 
 
 def set_options(
-    opts: Optional[Options], is_wayland: bool = False, debug_rendering: bool = False, debug_font_fallback: bool = False, is_server: bool = False
+    opts: Optional[Options],
+    is_wayland: bool = False,
+    debug_rendering: bool = False,
+    debug_font_fallback: bool = False,
+    is_server: bool = False,
+    is_client: bool = False,
 ) -> None:
     pass
 

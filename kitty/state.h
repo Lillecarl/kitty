@@ -601,6 +601,9 @@ typedef struct GlobalState {
     bool is_wayland, is_apple;
     // Headless server mode: no GPU, no display. The attached client renders.
     bool is_server;
+    // This kitty only displays another kitty's terminals. Keys go to the
+    // server, which owns the programs and the keyboard protocol flags.
+    bool is_client;
     bool has_render_frames;
     bool debug_rendering, debug_font_fallback;
     bool has_pending_resizes, has_pending_closes;

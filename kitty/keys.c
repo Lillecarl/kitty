@@ -355,6 +355,13 @@ on_key_input(const GLFWkeyevent *ev) {
         GLFWkeyevent *k = w->buffered_keys.key_data;
         k[w->buffered_keys.count++] = *ev;
         debug("buffering key until child is ready\n");
+    } else if (global_state.is_client) {
+        // The shortcut match above already resolved this client's own
+        // keybindings. What is left belongs to the program, which runs on the
+        // server. This side cannot encode it: the keyboard protocol flags live
+        // on the server's Screen. So send the event and let the server encode.
+        dispatch_key_event(send_key_to_server);
+        debug("sent key to the kitty server\n");
     } else send_key_to_child(w->id, screen, ev);
 #undef dispatch_key_event
 }

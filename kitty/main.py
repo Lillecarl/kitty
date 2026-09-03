@@ -382,7 +382,7 @@ class AppRunner:
     def __call__(self, opts: Options, args: CLIOptions, bad_lines: Sequence[BadLine] = (), talk_fd: int = -1) -> None:
         if theme_colors.refresh():
             theme_colors.patch_opts(opts, args.debug_rendering)
-        set_options(opts, is_wayland(), args.debug_rendering, args.debug_font_fallback, is_server_mode())
+        set_options(opts, is_wayland(), args.debug_rendering, args.debug_font_fallback, is_server_mode(), is_client_mode())
         try:
             # A server never shapes or rasterizes text, so it does not open a
             # single font file. The attached client does that with its own
