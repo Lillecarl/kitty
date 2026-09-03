@@ -434,6 +434,15 @@ framebuffer_size_callback(GLFWwindow *w, int width, int height) {
     min_size_for_os_window(global_state.callback_os_window, &min_width, &min_height);
     if (width >= min_width && height >= min_height) {
         OSWindow *window = global_state.callback_os_window;
+        if (global_state.is_server) {
+            // A client reports its viewport once, and authoritatively. There is
+            // no drag to debounce, and the handshake reply has to describe the
+            // grid the client actually gets, so apply it now.
+            update_os_window_viewport(window, true);
+            request_tick_callback();
+            global_state.callback_os_window = NULL;
+            return;
+        }
         global_state.has_pending_resizes = true;
         change_live_resize_state(global_state.callback_os_window, true);
         window->live_resize.last_resize_event_at = monotonic();
@@ -2177,8 +2186,7 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
         glfwWaylandSetInitialWindowSizeCallback(wayland_initial_size_callback);
         initial_window_size_py_callback = get_window_size;
     }
-    GLFWwindow *glfw_window =
-        glfwCreateWindow(width, height, title, NULL, global_state.is_server ? NULL : (temp_window ? temp_window : common_context), lsc);
+    GLFWwindow *glfw_window = glfwCreateWindow(width, height, title, NULL, global_state.is_server ? NULL : (temp_window ? temp_window : common_context), lsc);
     initial_window_size_py_callback = NULL;
     if (temp_window) {
         glfwDestroyWindow(temp_window);
