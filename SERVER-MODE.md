@@ -278,13 +278,35 @@ about the change with an `os_windows` event, because it cannot see the OS
 windows for itself.
 
 **Bytes arriving in the same packet as the preamble are already stream data.**
-Nothing else would deliver them until the client happened to send more. Not
-reachable yet, because nothing flows from the client, but it would have shown
-up as "the first keystroke after attach is late".
+Nothing else would deliver them until the client happened to send more.
+Not reachable when it was written, because nothing flowed from the client. It
+would have shown up as "the first keystroke after attach is late".
 
-Not yet: nothing flows from the client, so `data_channel_client_message` is a
-stub. Screen modes, cursor visibility and shape, and window titles are not
-carried either — see §7.
+**The client types, and the client→server direction is JSON.** A client sends
+events on the same channel the server sends them on, with one envelope in both
+directions and the event name saying which. This is §5.6's argument applied to
+input: unknown fields cost an older peer nothing, and an event name a server
+does not know is dropped. Mouse events, named actions and focus all fit without
+a version bump, which is why the binary envelope was the wrong choice here. Key
+volume is tens of messages a second at worst, so the bytes do not matter.
+
+Two events carry typing. `text` goes to the terminal as it is, which is a
+paste, an IME commit, or a client that resolves nothing itself. `key` reports a
+key the client did not handle, per §5.4: the client cannot encode it, because
+the keyboard protocol flags and the cursor key mode live on the server side
+Screen. The wire carries kitty's own key, modifier and action numbers.
+
+The server encodes releases too, and a release usually encodes to nothing. It
+writes nothing in that case, so the client can forward everything and let the
+terminal decide. There are no synthesized releases on the server.
+
+One bug this uncovered before it could bite: `DataChannel.encode` wrote a
+length prefix that `receive` never read, so an uncompressed channel returned
+nothing at all. Only the compressed path had a framer. Nothing had noticed,
+because nothing flowed from the client.
+
+Not yet: screen modes, cursor visibility and shape, and window titles are not
+carried — see §7.
 
 Known gap: `attrs.mark` is always zero, because `mark_text_in_line` runs in the
 render pass the server does not run. Marks are presentation config, so they
@@ -821,6 +843,9 @@ against its own keymap first, handles what it owns locally, sends named actions
 for what the server owns, and forwards everything unmatched as raw events. Mouse
 forwards pixel coords plus viewport and the server maps to cells.
 
+Done: raw key events and literal text, as JSON events on the data channel — see
+the progress notes. Named actions and mouse are open, and need no version bump.
+
 ### 5.5 Latency, and no local echo
 
 Every keystroke round-trips before the echo returns — no worse than running a
@@ -874,11 +899,11 @@ the hello succeeds.
    geometry for a window nobody displays, and layouts respond to a simulated
    resize.
 
-3. **Cell protocol, visible region only.** *(done for output; input is open)*
+3. **Cell protocol, visible region only.** *(done, both directions)*
    Serializer walking the linebuf and emitting dirty lines as (text, style);
    the reader rebuilds `Line`s and runs `render_line` locally. The view
    traversal is deliberately not mirrored — see the progress notes. Still to
-   come: the client to server direction, and a renderer on the far end.
+   come: a renderer on the far end.
    **Demo:** attach from a laptop, see the remote shell, type, detach,
    reattach, state intact.
 
