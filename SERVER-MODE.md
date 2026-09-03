@@ -161,7 +161,7 @@ for ligatures under the cursor, which is shaping, which is client-side.
 **Dirtiness alone does not describe a frame, which the plan got wrong.**
 `linebuf_index` (`line-buf.c:365`) rotates `line_attrs` together with the
 lines, so a clean line that scrolls from y=5 to y=4 arrives clean at y=4.
-Normal kitty does not care, because `update_line_data` (`screen.c:4014`) sits
+Normal kitty does not care, because `update_line_data` (`screen.c:4124`) sits
 *outside* the dirty check and re-uploads every line by position every frame.
 Dirtiness gates shaping there, not transmission. A delta that ships only dirty
 lines therefore misses `cat bigfile` entirely — the most common workload there
@@ -230,7 +230,7 @@ The exchange is uncompressed, per §5.6, because it is where compression is
 agreed.
 
 One trap, and it was not obvious. `framebuffer_size_callback`
-(`glfw.c:428`) does not resize. It starts a live resize and lets
+(`glfw.c:430`) does not resize. It starts a live resize and lets
 `process_pending_resizes` debounce it, which is right for a drag and wrong for
 a client: the grid still described the old viewport when the call returned, so
 the reply described a window the client was not getting. Server mode now
@@ -307,8 +307,8 @@ that an OS window exists (§5.1).
 ### The parse path is font-independent
 
 `fonts_data` enters `screen.c` in exactly two places, both on the render path:
-`screen_update_cell_data` (`kitty/screen.c:3960`) and `render_overlay_line`
-(`kitty/screen.c:4770`). Nothing in VT parsing, scrolling, scrollback, or
+`screen_update_cell_data` (`kitty/screen.c:4070`) and `render_overlay_line`
+(`kitty/screen.c:4901`). Nothing in VT parsing, scrolling, scrollback, or
 selection touches fonts. Grid width decisions come from `char-props` tables,
 not font metrics.
 
@@ -363,30 +363,31 @@ theming of palette colors nearly free.
 
 `kitty/main.py:97-106` picks a backend by name; `kitty/constants.py:216`
 resolves it to `glfw-{module}.so`. The main loop is display-agnostic:
-`run_main_loop` (`kitty/glfw.c:3187`) → `glfwRunMainLoop`, implemented
-generically in `glfw/main_loop.h:27` over an `EventLoopData` from
+`run_main_loop` (`kitty/glfw.c:3398`) → `_glfwPlatformRunMainLoop`, implemented
+generically in `glfw/main_loop.h:28` over an `EventLoopData` from
 `glfw/backend_utils.c` — a plain `poll()` loop with fd registration and timers.
 
 A vendored `null_*` platform and an `osmesa` module already exist in
-`glfw/source-info.json`. Two caveats: `setup.py:1262` builds only
-`x11 wayland` (or `cocoa`), and `glfw/null_window.c:403-409` stubs
+`glfw/source-info.json`. Two caveats applied before this work: `setup.py` built
+only `x11 wayland` (or `cocoa`), and `null_window.c` stubbed
 `_glfwPlatformWaitEvents` and `_glfwPlatformPostEmptyEvent` to no-ops, so it
 would busy-loop. A real headless loop backend is small because
-`backend_utils.c` already does the hard part.
+`backend_utils.c` already does the hard part. Both are now fixed; see spike 1.
 
 ### Transport infrastructure exists
 
 `child-monitor.c` already runs a peer socket server for single-instance and
-`kitty @`: `add_peer` (`:1883`), `peer_message_received` dispatch to Python
-(`:573-587`), `send_response_to_peer` (`:239`), `talk_fd`/`listen_fd`
-(`:44-57`). With unix-socket-over-SSH as the transport, this is the complete
+`kitty @`: `add_peer` (`:1958`), `peer_message_received` dispatch to Python
+(`:593-608`), `send_response_to_peer` (`:2360`), `talk_fd`/`listen_fd`
+(`:57`). With unix-socket-over-SSH as the transport, this is the complete
 substrate — reuse the accept/dispatch plumbing rather than inventing one.
+`push_to_peer` (`:2187`) is this work's addition for the data channel.
 
 ### Invalidation on font change already exists
 
 `screen_dirty_sprite_positions` (`screen.c:275`) plus
-`screen->reload_all_gpu_data` (`state.c:512-533`), driven by
-`Boss.on_dpi_change` (`boss.py:1735`) — already exercised on every monitor
+`screen->reload_all_gpu_data` (`state.c:531-535`), driven by
+`Boss.on_dpi_change` (`boss.py:1848`) — already exercised on every monitor
 change and `set-font-size`. This is exactly the path for "a client attached
 with different fonts than the last one".
 
@@ -503,7 +504,7 @@ two caveats below.
 
 **(b) Steady-state frame updates** — dirty lines only, never full state. Kitty
 already tracks `has_dirty_text` per line (`line.h:86`) and
-`screen_update_cell_data` walks only dirty lines (`screen.c:4000-4012`). A
+`screen_update_cell_data` walks only dirty lines (`screen.c:4110-4122`). A
 typical frame is 1–3 changed lines — a few KB raw, well under a KB compressed —
 plus lines appended to history as they scroll off
 (`history_line_added_count`, `screen.c:2391-2392`, append-only and cheap), plus
@@ -545,7 +546,7 @@ should not gate v1.
 
 `CPUCell.ch_or_idx` holds a literal codepoint when `ch_is_idx` is clear, but an
 index into a per-`Screen` `TextCache` when it is set — and **that cache garbage
-collects and renumbers**. `screen.c:1395` triggers GC every 8192 insertions, and
+collects and renumbers**. `screen.c:1486` triggers GC every 8192 insertions, and
 `screen.c:1037-1052` rewrites `ch_or_idx` in place across every live cell,
 history included. So raw indices are meaningless to a client and unstable over
 time within a single session. A naive `memcpy` of `CPUCell`s would ship dangling
@@ -560,12 +561,12 @@ independently and neither needs to know about the other.
 
 ### Rewrap: mostly a non-problem, because kitty already freezes during a drag
 
-`screen_resize` (`screen.c:627`) calls `rewrap` (`screen.c:299`), which re-flows
+`screen_resize` (`screen.c:631`) calls `rewrap` (`screen.c:299`), which re-flows
 the **entire** history into a freshly allocated `HistoryBuf`, so any column
 change invalidates the client's mirror wholesale.
 
 But kitty already has the right semantics natively. `resize_debounce_time`
-(default `0.1 0.5`) is applied at `child-monitor.c:1263-1291`: during a live
+(default `0.1 0.5`) is applied at `child-monitor.c:1328-1356`: during a live
 drag kitty does **not** call `screen_resize` at all. It renders the existing
 grid into the new viewport and only resizes when the drag pauses, or when the OS
 reports the resize finished (macOS distinguishes the two, hence two numbers).
