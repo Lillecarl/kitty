@@ -485,6 +485,14 @@ attaches over a socket and renders with its own fonts, so combine this with
 on a machine that has none.
 
 
+--attach
+Attach to a kitty running with :option:`{appname} --server` at this address, for
+example :code:`unix:/tmp/mykitty`. The server holds the terminals and the
+scrollback; this kitty only displays them, with its own fonts, colors and
+keybindings. The address is the one the server was given with
+:option:`{appname} --listen-on`, and SSH can carry it.
+
+
 --start-as
 type=choices
 default=normal

@@ -235,6 +235,15 @@ def detect_if_wayland_ok() -> bool:
     return False
 
 
+def is_client_mode() -> bool:
+    """True when this kitty only displays another kitty's terminals.
+
+    Set from the --attach address at startup. A client spawns nothing, so the
+    startup session and every launch are skipped.
+    """
+    return bool(getattr(is_client_mode, 'ans', False))
+
+
 def is_server_mode() -> bool:
     """True when kitty runs headless, holding terminal state for a remote client.
 

@@ -51,6 +51,7 @@ from .constants import (
     clear_handled_signals,
     config_dir,
     handled_signals,
+    is_client_mode,
     is_macos,
     is_wayland,
     kitten_exe,
@@ -185,6 +186,7 @@ from .window import CommandOutput, CwdRequest, Window, global_watchers
 
 if TYPE_CHECKING:
     from .attach import DataChannel
+    from .client import Client
     from .fast_data_types import OSWindowSize
     from .rc.base import ResponseType
 # }}}
@@ -424,6 +426,7 @@ class Boss:
         self.update_check_started = False
         self.peer_data_map: dict[int, dict[str, Sequence[str]] | None] = {}
         self.data_channel_timer_id = 0
+        self.client: 'Client | None' = None
         self.background_process_death_notify_map: dict[int, Callable[[int, Exception | None], None]] = {}
         self.encryption_key = EllipticCurveKey()
         self.encryption_public_key = f'{RC_ENCRYPTION_PROTOCOL_VERSION}:{base64.b85encode(self.encryption_key.public).decode("ascii")}'
@@ -1113,6 +1116,33 @@ class Boss:
         for os_window_id in self.os_window_map:
             toggle_os_window_visibility(os_window_id, move_to_active_screen=True)
 
+    # Client mode {{{
+
+    def start_client(self, os_window_id: int) -> None:
+        """Attach to the server this kitty only displays.
+
+        The OS window exists and the fonts are loaded by now, so the metrics
+        sent here describe a grid this kitty can really draw. The server has no
+        display of its own and lays its windows out for them.
+        """
+        from .client import Client
+
+        # The startup session never ran, so the OS window has no tab manager
+        # yet. It gets one, and one empty tab for the server's windows.
+        self.add_os_window(None, os_window_id=os_window_id)
+        tm = self.os_window_map[os_window_id]
+        tm.new_tab(empty_tab=True)
+        client = Client(self, self.args.attach)
+        try:
+            hello = client.attach(client.client_metrics(os_window_id))
+            client.open_channel()
+        except Exception as err:
+            raise SystemExit(f'Could not attach to {self.args.attach}: {err}')
+        self.client = client
+        log_error(f'Attached to a kitty server speaking protocol {hello.get("protocol_version")}, cell wire {hello.get("cell_wire_version")}')
+
+    # }}}
+
     # Server mode data channel {{{
 
     def data_channel_message(self, msg_bytes: bytes, peer_id: int) -> bytes | None:
@@ -1693,6 +1723,8 @@ class Boss:
                 sess = create_sessions(get_options(), self.args, special_window=SpecialWindow([kitty_exe(), '+runpy', 'input()']))
                 self.startup_first_child(first_os_window_id, startup_sessions=tuple(sess))
                 self.launch_urls(*urls)
+            elif is_client_mode():
+                self.start_client(first_os_window_id)
             else:
                 self.startup_first_child(first_os_window_id, startup_sessions=startup_sessions)
 

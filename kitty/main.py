@@ -22,6 +22,7 @@ from .constants import (
     beam_cursor_data_file,
     clear_handled_signals,
     glfw_path,
+    is_client_mode,
     is_macos,
     is_quick_access_terminal_app,
     is_server_mode,
@@ -317,13 +318,18 @@ def _run_app(opts: Options, args: CLIOptions, bad_lines: Sequence[BadLine] = (),
 
                 pos_x, pos_y = parse_os_window_position(args.position)
         startup_session_error: tuple[Exception, str] | None = None
-        try:
-            startup_sessions = tuple(create_sessions(opts, args, default_session=opts.startup_session))
-        except Exception as e:
-            startup_session_error = (e, (getattr(args, 'session', '') or opts.startup_session or ''))
-            if getattr(args, 'session', ''):
-                args.session = ''
-            startup_sessions = tuple(create_sessions(opts, args))
+        if is_client_mode():
+            # A client spawns nothing. Its windows come from the server, once
+            # the OS window exists and the fonts are loaded.
+            startup_sessions = ()
+        else:
+            try:
+                startup_sessions = tuple(create_sessions(opts, args, default_session=opts.startup_session))
+            except Exception as e:
+                startup_session_error = (e, (getattr(args, 'session', '') or opts.startup_session or ''))
+                if getattr(args, 'session', ''):
+                    args.session = ''
+                startup_sessions = tuple(create_sessions(opts, args))
         wincls = (startup_sessions[0].os_window_class if startup_sessions else '') or args.cls or appname
         winname = (startup_sessions[0].os_window_name if startup_sessions else '') or args.name or wincls or appname
         window_state = (args.start_as if args.start_as and args.start_as != 'normal' else None) or (
@@ -646,6 +652,10 @@ def kitty_main(called_from_panel: bool = False) -> None:
     # threads. These threads must not handle the masked signals, to ensure
     # kitty can handle them. See https://github.com/kovidgoyal/kitty/issues/4636
     mask_kitty_signals_process_wide()
+    if cli_opts.attach:
+        if cli_opts.server:
+            raise SystemExit('A kitty is either a server or a client, not both')
+        setattr(is_client_mode, 'ans', True)
     init_glfw(opts, cli_opts.debug_keyboard, cli_opts.debug_rendering, cli_opts.server)
     try:
         with setup_profiling():

@@ -1,362 +1,228 @@
 #!/usr/bin/env python
-# License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
+# License: GPLv3 Copyright: 2025, Kovid Goyal <kovid at kovidgoyal.net>
 
-# Replay the log from --dump-commands. To use first run
-# kitty --dump-commands > file.txt
-# then run
-# kitty --replay-commands file.txt
-# will replay the commands and pause at the end waiting for user to press enter
+"""The display half of a kitty running in server mode.
+
+The server holds the terminals, the programs and the scrollback. This kitty
+holds the display: it shapes text with its own fonts, draws with its own GPU,
+and resolves its own keybindings. It owns none of the state it shows.
+
+A client is an ordinary kitty in every other way. Its windows carry real
+Screens, and the normal render pass draws them. Only two things differ: nothing
+is spawned, so a window has no child, and the cells arrive from a socket
+instead of from a parser.
+"""
 
 import json
-import sys
-from contextlib import suppress
-from typing import Any
-
-from .fast_data_types import DND_CODE, TEXT_SIZE_CODE
-
-CSI = '\x1b['
-OSC = '\x1b]'
-
-
-def write(x: str) -> None:
-    sys.stdout.write(x)
-    sys.stdout.flush()
-
-
-def set_title(*args: Any) -> None:
-    pass
-
-
-def set_icon(*args: Any) -> None:
-    pass
-
-
-def screen_bell() -> None:
-    pass
-
-
-def screen_normal_keypad_mode() -> None:
-    write('\x1b>')
-
-
-def screen_alternate_keypad_mode() -> None:
-    write('\x1b=')
-
-
-def screen_cursor_position(y: int, x: int) -> None:
-    write(f'{CSI}{y};{x}H')
-
-
-def screen_cursor_forward(amt: int) -> None:
-    write(f'{CSI}{amt}C')
-
-
-def screen_save_cursor() -> None:
-    write('\x1b7')
-
-
-def screen_restore_cursor() -> None:
-    write('\x1b8')
-
-
-def screen_cursor_back1(amt: int) -> None:
-    write(f'{CSI}{amt}D')
-
-
-def screen_save_modes() -> None:
-    write(f'{CSI}?s')
-
-
-def screen_restore_modes() -> None:
-    write(f'{CSI}?r')
-
-
-def screen_designate_charset(which: int, to: int) -> None:
-    w = '()'[int(which)]
-    t = chr(int(to))
-    write(f'\x1b{w}{t}')
-
-
-def select_graphic_rendition(payload: str) -> None:
-    write(f'{CSI}{payload}m')
-
-
-def deccara(*a: int) -> None:
-    write(f'{CSI}{";".join(map(str, a))}$r')
-
-
-def screen_cursor_to_column(c: int) -> None:
-    write(f'{CSI}{c}G')
-
-
-def screen_cursor_to_line(ln: int) -> None:
-    write(f'{CSI}{ln}d')
-
-
-def screen_set_mode(x: int, private: bool) -> None:
-    write(f'{CSI}{"?" if private else ""}{x}h')
-
-
-def screen_save_mode(x: int, private: bool) -> None:
-    write(f'{CSI}{"?" if private else ""}{x}s')
-
-
-def screen_reset_mode(x: int, private: bool) -> None:
-    write(f'{CSI}{"?" if private else ""}{x}l')
-
-
-def screen_restore_mode(x: int, private: bool) -> None:
-    write(f'{CSI}{"?" if private else ""}{x}r')
-
-
-def screen_set_margins(t: int, b: int) -> None:
-    write(f'{CSI}{t};{b}r')
-
-
-def screen_indexn(n: int) -> None:
-    write(f'{CSI}{n}S')
-
-
-def screen_delete_characters(count: int) -> None:
-    write(f'{CSI}{count}P')
-
-
-def screen_push_colors(which: int) -> None:
-    write(f'{CSI}{which}#P')
-
-
-def screen_pop_colors(which: int) -> None:
-    write(f'{CSI}{which}#Q')
-
-
-def screen_report_colors() -> None:
-    write(f'{CSI}#R')
-
-
-def screen_repeat_character(num: int) -> None:
-    write(f'{CSI}{num}b')
-
-
-def screen_insert_characters(count: int) -> None:
-    write(f'{CSI}{count}@')
-
-
-def screen_scroll(count: int) -> None:
-    write(f'{CSI}{count}S')
-
-
-def screen_erase_in_display(how: int, private: bool) -> None:
-    write(f'{CSI}{"?" if private else ""}{how}J')
-
-
-def screen_erase_in_line(how: int, private: bool) -> None:
-    write(f'{CSI}{"?" if private else ""}{how}K')
-
-
-def screen_erase_characters(num: int) -> None:
-    write(f'{CSI}{num}X')
-
-
-def screen_delete_lines(num: int) -> None:
-    write(f'{CSI}{num}M')
-
-
-def screen_cursor_up2(count: int) -> None:
-    write(f'{CSI}{count}A')
-
-
-def screen_cursor_down(count: int) -> None:
-    write(f'{CSI}{count}B')
-
-
-def screen_cursor_down1(count: int) -> None:
-    write(f'{CSI}{count}E')
-
-
-def screen_report_key_encoding_flags() -> None:
-    write(f'{CSI}?u')
-
-
-def screen_set_key_encoding_flags(flags: int, how: int) -> None:
-    write(f'{CSI}={flags};{how}u')
-
-
-def screen_push_key_encoding_flags(flags: int) -> None:
-    write(f'{CSI}>{flags}u')
-
-
-def screen_pop_key_encoding_flags(flags: int) -> None:
-    write(f'{CSI}<{flags}u')
-
-
-def screen_carriage_return() -> None:
-    write('\r')
-
-
-def screen_linefeed() -> None:
-    write('\n')
-
-
-def screen_tab() -> None:
-    write('\t')
-
-
-def screen_backspace() -> None:
-    write('\x08')
-
-
-def screen_set_cursor(mode: int, secondary: int) -> None:
-    write(f'{CSI}{secondary} q')
-
-
-def screen_insert_lines(num: int) -> None:
-    write(f'{CSI}{num}L')
-
-
-def draw(*a: str) -> None:
-    write(' '.join(a))
-
-
-def screen_manipulate_title_stack(op: int, which: int) -> None:
-    write(f'{CSI}{op};{which}t')
-
-
-def report_device_attributes(mode: int, char: int) -> None:
-    x = CSI
-    if char:
-        x += chr(char)
-    if mode:
-        x += str(mode)
-    write(f'{x}c')
-
-
-def report_device_status(x: int, private: bool) -> None:
-    write(f'{CSI}{"?" if private else ""}{x}n')
-
-
-def screen_decsace(mode: int) -> None:
-    write(f'{CSI}{mode}*x')
-
-
-def screen_set_8bit_controls(mode: int) -> None:
-    write(f'\x1b {"G" if mode else "F"}')
-
-
-def write_osc(code: int, string: str = '') -> None:
-    if string:
-        write(f'{OSC}{code};{string}\x07')
-    else:
-        write(f'{OSC}{code}\x07')
-
-
-set_color_table_color = process_cwd_notification = write_osc
-clipboard_control_pending: str = ''
-
-
-def set_dynamic_color(payload: str) -> None:
-    code, data = payload.partition(' ')[::2]
-    write_osc(int(code), data)
-
-
-def shell_prompt_marking(payload: str) -> None:
-    write_osc(133, payload)
-
-
-def clipboard_control(payload: str) -> None:
-    global clipboard_control_pending
-    code, data = payload.split(';', 1)
-    if code == '-52':
-        if clipboard_control_pending:
-            clipboard_control_pending += data.lstrip(';')
-        else:
-            clipboard_control_pending = payload
-        return
-    if clipboard_control_pending:
-        clipboard_control_pending += data.lstrip(';')
-        payload = clipboard_control_pending
-        clipboard_control_pending = ''
-    write(f'{OSC}{payload}\x07')
-
-
-def dnd_command(payload: str) -> None:
-    c = json.loads(payload)
-    text = c.pop('', '')
-    t = c.pop('type', 'a')
-    if isinstance(t, (bytes, memoryview)):
-        t = str(t, 'utf-8', 'replace')
-    m = f't={t}'
-    if more := c.pop('more', None):
-        m += f':m={more}'
-    if client_id := c.pop('client_id', None):
-        m += f':i={client_id}'
-    if operation := c.pop('operation', None):
-        m += f':o={operation}'
-    if cell_x := c.pop('cell_x', None):
-        m += f':x={cell_x}'
-    if cell_y := c.pop('cell_y', None):
-        m += f':y={cell_y}'
-    if pixel_x := c.pop('pixel_x', None):
-        m += f':X={pixel_x}'
-    if pixel_y := c.pop('pixel_y', None):
-        m += f':Y={pixel_y}'
-    write(f'{OSC}{DND_CODE};{m};{text}\x1b\\')
-
-
-def multicell_command(payload: str) -> None:
-    c = json.loads(payload)
-    text = c.pop('', '')
-    m = ''
-    if (w := c.pop('width', None)) is not None and w > 0:
-        m += f'w={w}:'
-    if (s := c.pop('scale', None)) is not None and s > 1:
-        m += f's={s}:'
-    if (n := c.pop('subscale_n', None)) is not None and n > 0:
-        m += f'n={n}:'
-    if (d := c.pop('subscale_d', None)) is not None and d > 0:
-        m += f'd={d}:'
-    if (v := c.pop('vertical_align', None)) is not None and v > 0:
-        m += f'v={v}:'
-    if (h := c.pop('horizontal_align', None)) is not None and h > 0:
-        m += f'h={h}:'
-    if c:
-        raise Exception('Unknown keys in multicell_command: ' + ', '.join(c))
-    write(f'{OSC}{TEXT_SIZE_CODE};{m.rstrip(":")};{text}\a')
-
-
-def screen_multi_cursor(rest: str) -> None:
-    write(f'{CSI}>{rest.strip()} q')
-
-
-def replay(raw: str) -> None:
-    specials = frozenset(
-        {
-            'draw',
-            'set_title',
-            'set_icon',
-            'set_dynamic_color',
-            'set_color_table_color',
-            'select_graphic_rendition',
-            'process_cwd_notification',
-            'clipboard_control',
-            'shell_prompt_marking',
-            'multicell_command',
-            'screen_multi_cursor',
-            'dnd_command',
+import socket
+from typing import TYPE_CHECKING, Any
+
+from .attach import CHANNEL_PREAMBLE, SERVER_PROTOCOL_VERSION, SUPPORTED_COMPRESSION, ProtocolError
+from .constants import appname
+from .fast_data_types import CellStreamReader, CellStreamWriter
+from .window import Window
+
+if TYPE_CHECKING:
+    from .boss import Boss
+
+RC_PREFIX = b'\x1bP@kitty-cmd'
+RC_TERMINATOR = b'\x1b\\'
+# Long enough that a busy server still answers, short enough that a wrong
+# address fails while the user is still looking at the terminal.
+HANDSHAKE_TIMEOUT = 10.0
+
+
+class StubChild:
+    """Stands in for the process a client window does not have.
+
+    The programs run on the server. This window shows one and owns none of it,
+    so every answer here is empty rather than wrong. A caller that wants the
+    real thing has to ask the server.
+    """
+
+    def __init__(self, title: str = appname) -> None:
+        self.argv = [title]
+        self.cmdline = [title]
+        self.cwd = ''
+        self.current_cwd = ''
+        self.foreground_cwd = ''
+        self.environ: dict[str, str] = {}
+        self.final_env: dict[str, str] = {}
+        self.foreground_environ: dict[str, str] = {}
+        self.foreground_cmdline = [title]
+        self.foreground_processes: list[Any] = []
+        self.pid: int | None = None
+        self.pid_for_cwd: int | None = None
+        self.is_remote = True
+
+    def mark_terminal_ready(self) -> None:
+        pass
+
+    def reset_termios_state(self) -> None:
+        pass
+
+    def send_signal_for_key(self, key_num: bytes) -> bool:
+        # The server's terminal owns the line discipline, so it raises signals.
+        return False
+
+    def cmdline_of_pid(self, pid: int) -> list[str]:
+        return []
+
+
+def rc_command(name: str, payload: Any = None) -> bytes:
+    """One remote control command, framed the way a socket peer expects it."""
+    from .remote_control import create_basic_command, encode_send
+
+    return encode_send(create_basic_command(name, payload))
+
+
+def read_rc_response(sock: socket.socket) -> dict[str, Any]:
+    buf = b''
+    while RC_TERMINATOR not in buf:
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise ProtocolError('The server closed the connection during the handshake')
+        buf += chunk
+    body = buf.split(RC_TERMINATOR, 1)[0]
+    if not body.startswith(RC_PREFIX):
+        raise ProtocolError(f'The server did not answer with a remote control response: {body[:64]!r}')
+    ans = json.loads(body[len(RC_PREFIX) :])
+    if not isinstance(ans, dict):
+        raise ProtocolError('The server sent a malformed response')
+    return ans
+
+
+class ClientWindow(Window):
+    """A window that shows a server's screen and owns none of it."""
+
+    server_window_id: int = 0
+    client_title: str = ''
+
+    @property
+    def title(self) -> str:
+        return self.override_title or self.client_title or self.child_title
+
+
+class Client:
+    """One attachment, from the display side.
+
+    Two connections to the same address, as the server expects: a short lived
+    one that carries the handshake, and a long lived one that carries the
+    frames.
+    """
+
+    def __init__(self, boss: 'Boss', address: str) -> None:
+        self.boss = boss
+        self.address = address
+        self.hello: dict[str, Any] = {}
+        self.channel: socket.socket | None = None
+        self.reader: CellStreamReader | None = None
+        self.writer: CellStreamWriter | None = None
+        self.pending = b''
+        # Server window id to the window showing it.
+        self.windows: dict[int, int] = {}
+        self.timer_id = 0
+
+    # Connecting {{{
+
+    def connect_socket(self) -> socket.socket:
+        if not self.address.startswith('unix:'):
+            raise ProtocolError(f'Only unix: addresses are supported, not {self.address}')
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(HANDSHAKE_TIMEOUT)
+        sock.connect(self.address[len('unix:') :])
+        return sock
+
+    def attach(self, metrics: dict[str, int]) -> dict[str, Any]:
+        """Say hello, and describe the display the server is drawing for.
+
+        The metrics have to be real, so this runs after the OS window exists
+        and the fonts are loaded. The server has no display and lays its
+        windows out for whatever it is told here.
+        """
+        sock = self.connect_socket()
+        try:
+            payload = {
+                'protocol_version': SERVER_PROTOCOL_VERSION,
+                'compression': list(SUPPORTED_COMPRESSION),
+                'client': f'{appname} {metrics["width"]}x{metrics["height"]}',
+                **metrics,
+            }
+            sock.sendall(rc_command('attach', payload))
+            response = read_rc_response(sock)
+        finally:
+            sock.close()
+        if not response.get('ok'):
+            raise ProtocolError(str(response.get('error') or 'The server refused the attachment'))
+        data = response.get('data')
+        self.hello = json.loads(data) if isinstance(data, str) else (data or {})
+        return self.hello
+
+    def open_channel(self) -> None:
+        """Take the second connection, the one the frames come down."""
+        sock = self.connect_socket()
+        sock.sendall(CHANNEL_PREAMBLE + b'%d\n' % int(self.hello['attachment_id']))
+        buf = b''
+        while b'\n' not in buf:
+            chunk = sock.recv(4096)
+            if not chunk:
+                raise ProtocolError('The server closed the data channel')
+            buf += chunk
+        line, rest = buf.split(b'\n', 1)
+        if not line.startswith(b'OK'):
+            raise ProtocolError(f'The server refused the data channel: {line.decode("utf-8", "replace")}')
+        compressed = self.hello.get('compression') == 'zlib'
+        self.reader = CellStreamReader() if compressed else None
+        self.writer = CellStreamWriter() if compressed else None
+        self.pending = rest
+        sock.settimeout(0)
+        self.channel = sock
+
+    # }}}
+
+    def close(self) -> None:
+        if self.channel is not None:
+            self.channel.close()
+            self.channel = None
+
+    # Windows {{{
+
+    def client_metrics(self, os_window_id: int) -> dict[str, int]:
+        """The grid this client can actually draw, in the server's terms."""
+        from .fast_data_types import get_os_window_size
+
+        m = get_os_window_size(os_window_id) or {}
+        return {
+            'cell_width': int(m.get('cell_width', 0)),
+            'cell_height': int(m.get('cell_height', 0)),
+            'width': int(m.get('width', 0)),
+            'height': int(m.get('height', 0)),
+            'dpi_x': int(m.get('xdpi', 0)),
+            'dpi_y': int(m.get('ydpi', 0)),
         }
-    )
-    for line in raw.splitlines():
-        if line.strip() and not line.startswith('#'):
-            cmd, rest = line.partition(' ')[::2]
-            if cmd in specials:
-                globals()[cmd](rest)
-            else:
-                r = map(int, rest.split()) if rest else ()
-                globals()[cmd](*r)
 
+    def window_for(self, server_window_id: int) -> 'Window | None':
+        """The window showing a server window, made on first sight of it."""
+        wid = self.windows.get(server_window_id)
+        if wid is not None:
+            window = self.boss.window_id_map.get(wid)
+            if window is not None:
+                return window
+            del self.windows[server_window_id]
+        tab = self.boss.active_tab
+        if tab is None:
+            return None
+        window = ClientWindow(tab, StubChild(), self.boss.args)
+        tab._add_window(window)
+        self.windows[server_window_id] = window.id
+        window.server_window_id = server_window_id
+        return window
 
-def main(path: str) -> None:
-    with open(path) as f:
-        raw = f.read()
-    replay(raw)
-    with suppress(EOFError, KeyboardInterrupt):
-        input()
+    def note_titles(self, os_windows: Any) -> None:
+        for osw in os_windows or ():
+            for w in osw.get('windows', ()):
+                window = self.boss.window_id_map.get(self.windows.get(w.get('id', 0), 0))
+                if window is not None and w.get('title'):
+                    window.client_title = str(w['title'])
+
+    # }}}
