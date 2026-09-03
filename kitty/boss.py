@@ -1232,7 +1232,7 @@ class Boss:
             channel.send(event_message({'event': 'os_windows', 'os_windows': geometry}))
 
     def pump_data_channel(self, timer_id: int | None = None) -> None:
-        from .attach import WRITE_HIGH_WATER, attachments, frame_message
+        from .attach import WRITE_HIGH_WATER, attachments, frame_message, header_state
         from .fast_data_types import CELL_WIRE_HEADER_SIZE
 
         channel = attachments.channel
@@ -1257,13 +1257,19 @@ class Boss:
             snapshot = window_id not in channel.known
             payload = window.screen.serialize_cells(snapshot)
             channel.known.add(window_id)
-            # A payload of exactly a header carries no lines, so there is
-            # nothing to say about this window this tick.
-            if len(payload) <= CELL_WIRE_HEADER_SIZE:
+            state = header_state(payload)
+            # A payload of exactly a header carries no lines. It still travels
+            # when the header changed, because the cursor moves and hides
+            # without dirtying a cell. Only a repeat of both says nothing.
+            if len(payload) <= CELL_WIRE_HEADER_SIZE and state == channel.headers.get(window_id):
                 continue
+            channel.headers[window_id] = state
             if channel.send(frame_message(window_id, payload)) >= WRITE_HIGH_WATER:
                 break
         channel.known &= live
+        for window_id in tuple(channel.headers):
+            if window_id not in live:
+                del channel.headers[window_id]
 
     # }}}
 

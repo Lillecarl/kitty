@@ -268,7 +268,7 @@ Three things the plan did not have.
 to serialize where `render()` returns early in server mode, because the tick
 machinery already paces it. A timer at `repaint_delay` does the same job from
 Python, where the attachment state already lives, and it costs nothing when
-idle, because a clean screen serializes to a bare header and is not sent. The
+idle, because a clean screen serializes to a bare header the pump can drop. The
 `render()` hook stays the better place if the pump ever has to move to C.
 
 **An OS window opened after the attach had the server's default geometry**,
@@ -321,6 +321,14 @@ Titles are the opposite case: rare, and not tied to a frame. They ride the
 `os_windows` event, whose `windows` list now carries dicts rather than bare
 ids. The pump already diffs that event and sends it only on a change, so this
 needed no new machinery, and per window layout lands in the same place later.
+
+This amends the pump's rule. A payload of exactly a header used to mean
+"nothing to say", and the pump dropped it. But the cursor moves and hides
+without dirtying a cell, so `tput civis` on an idle screen, or moving around in
+vim, produced a frame with no lines and a header that had changed. The pump now
+keeps the header state it last sent per window and drops a frame only when both
+the lines and the header repeat. The flags byte and the record count are not
+part of that state, because they describe the payload and not the screen.
 
 Not yet: the modes that are neither per frame nor layout. Mouse tracking waits
 for the mouse work, and runtime `OSC 4/10/11` is still §7 question 1.

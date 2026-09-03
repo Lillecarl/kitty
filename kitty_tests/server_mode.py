@@ -221,6 +221,16 @@ class TestServerMode(BaseTest):
             f'The title never reached the client: {client.titles()}',
         )
 
+        # A frame with no lines in it still has to travel. Hiding the cursor
+        # dirties no cell, so a rule of "lines or nothing" freezes the mirror's
+        # cursor. The first sleep separates the mode change from the echo of
+        # the command, which would otherwise carry the header along with it.
+        screen = client.screens[window_id]
+        self.assertTrue(screen.cursor_visible)
+        client.send(text_event(window_id, "sleep 1; printf '\\033[?25l'; sleep 999"))
+        client.send(key_event(window_id, GLFW_FKEY_ENTER))
+        self.assertTrue(client.wait_for(lambda: not screen.cursor_visible), 'The hidden cursor never reached the client')
+
         # Another client takes the session. This one is told why, rather than
         # just losing its socket.
         client.events.clear()

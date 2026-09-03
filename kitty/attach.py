@@ -200,6 +200,16 @@ MSG_EVENT = 2
 LENGTH_PREFIX = 4
 MAX_MESSAGE = 64 * 1024 * 1024
 
+# The part of a wire header that describes the screen rather than the payload:
+# columns, lines, cursor position and visual state. It skips the magic, the
+# version and the flags byte at the front, and the record count at the back,
+# because those describe the payload itself. See kitty/cell-wire.c.
+def header_state(payload: bytes) -> bytes:
+    from .fast_data_types import CELL_WIRE_HEADER_SIZE
+
+    return bytes(payload[4 + 1 + 1 : CELL_WIRE_HEADER_SIZE - 4])
+
+
 # Stop serializing when this much is already queued for the client. Cell
 # updates are idempotent, so the dirty state of each screen is the queue: skip
 # a tick and the next one sends the coalesced result.
@@ -263,6 +273,10 @@ class DataChannel:
         # Windows this client has a full picture of. Anything else gets a
         # snapshot before it gets a delta.
         self.known: set[int] = set()
+        # The header state each window was last sent with. The cursor moves and
+        # hides without dirtying a cell, so a frame with no lines in it still
+        # has something to say.
+        self.headers: dict[int, bytes] = {}
         # The OS window layout the client has been told about, so a change can
         # be noticed and sent.
         self.geometry: list[dict[str, Any]] = []

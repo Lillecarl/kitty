@@ -126,14 +126,17 @@ class TestCellWire(BaseTest):
         self.assertFalse(dest.cursor_visible)
         self.ae(dest.cursor.shape, src.cursor.shape)
         self.ae(dest.cursor.blink, src.cursor.blink)
-        # Reverse video has no Python getter, so compare the whole byte. That
-        # covers every bit in it, in both directions.
+        # Reverse video has no Python getter, so assert the bit directly. A
+        # comparison alone would pass if the sender dropped it consistently.
+        self.assertTrue(visual_state(payload) & 0x04)
+        # And compare the whole byte, which covers every bit in both directions.
         self.ae(visual_state(dest.serialize_cells(True)), visual_state(payload))
 
         # And back again, on a delta rather than a snapshot.
         parse_bytes(src, b'\x1b[?25h\x1b[2 q\x1b[?5l')
         payload = src.serialize_cells()
         dest.apply_serialized_cells(payload)
+        self.assertFalse(visual_state(payload) & 0x04)
         self.assertTrue(dest.cursor_visible)
         self.ae(dest.cursor.shape, src.cursor.shape)
         self.ae(dest.cursor.blink, src.cursor.blink)
