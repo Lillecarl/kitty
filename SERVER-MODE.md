@@ -450,11 +450,28 @@ Testing this needed a display on a machine that has none. Weston's headless
 backend with software OpenGL is the answer, and it is what the demo script sets
 up. An X server will not do: Xvfb has no usable GLX visuals.
 
+**A layout belongs to the server, and finding that out needed pixels.** A split
+server session looked right at first: two panes, both mirrored, borders and
+all. It was luck. The client was running its own layout on its own viewport,
+and both ends being kitty with matching defaults made the two agree. Give the
+client `enabled_layouts=stack` and it drew one window instead of two, with the
+glyphs stretched, because the screen was the server's 88x13 and the rectangle
+was the full 88x26.
+
+So the server names its layout in the `os_windows` event and the client adopts
+it, ignoring its own `enabled_layouts` on purpose. How a session is arranged
+belongs to the server, because it survives a detach. How it looks belongs to
+the client. That line is §5.2's, and this is where it actually falls.
+
+Nothing but a screenshot would have caught it. Every state assertion passed:
+both sides reported two windows at 88x13, which is exactly what made the bug
+invisible.
+
 Not yet on the client: scrollback is empty, because the permutation rearranges
-the visible region and nothing appends to the client's history buffer yet. All
-of a server's windows land in one tab, since per window layout is not in the
-`os_windows` event. IME committed text goes through `schedule_write_to_child` in
-C and does not reach the text event.
+the visible region and nothing appends to the client's history buffer yet. Tabs
+are not carried, so a server with several tabs shows only the active one. IME
+committed text goes through `schedule_write_to_child` in C and does not reach
+the text event.
 
 Not yet: the modes that are neither per frame nor layout. Mouse tracking waits
 for the mouse work, and runtime `OSC 4/10/11` is still §7 question 1.
