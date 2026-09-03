@@ -22,6 +22,7 @@
 #include "data-types.h"
 #include "control-codes.h"
 #include "screen.h"
+#include "cell-wire.h"
 #include "dnd.h"
 #include "state.h"
 #include "iqsort.h"
@@ -665,6 +666,10 @@ screen_resize(Screen *self, unsigned int lines, unsigned int columns) {
     }
     if (!rewrap(self, lines, columns, &num_content_lines_before, &num_content_lines_after, &cursor, &main_saved_cursor, &alt_saved_cursor, is_main))
         return false;
+    // Rewrap re-flows every line into a fresh buffer, so nothing a consumer
+    // holds is still valid.
+    self->main_linebuf->content_moved = true;
+    self->alt_linebuf->content_moved = true;
     setup_cursor(cursor);
     /* printf("old_cursor: (%u, %u) new_cursor: (%u, %u) beyond_content: %d\n", self->cursor->x, self->cursor->y, cursor.after.x, cursor.after.y,
      * cursor.is_beyond_content); */
@@ -1951,6 +1956,9 @@ screen_toggle_screen_buffer(Screen *self, bool save_cursor, bool clear_alt_scree
     }
     screen_history_scroll(self, SCROLL_FULL, false);
     self->is_dirty = true;
+    // The buffer being switched to carries its own per-line dirty state, which
+    // says nothing about what a consumer of dirty lines last saw.
+    self->linebuf->content_moved = true;
     grman_mark_layers_dirty(self->grman);
     clear_all_selections(self);
     self->extra_cursors.count = 0;
@@ -6986,6 +6994,8 @@ static PyMethodDef methods[] = {
                                     MND(marked_cells, METH_NOARGS) MND(scroll_to_next_mark, METH_VARARGS) MND(update_only_line_graphics_data, METH_NOARGS)
                                         MND(bell, METH_NOARGS) MND(mark_potential_url_drag, METH_NOARGS) MND(current_selections, METH_NOARGS){
                                             "select_graphic_rendition", (PyCFunction)_select_graphic_rendition, METH_VARARGS, ""},
+    {"serialize_cells", (PyCFunction)screen_serialize_cells, METH_VARARGS, ""},
+    {"apply_serialized_cells", (PyCFunction)screen_apply_serialized_cells, METH_O, ""},
 
     {NULL} /* Sentinel */
 };

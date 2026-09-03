@@ -19,6 +19,10 @@ typedef struct {
     LineAttrs *line_attrs;
     Line *line;
     TextCache *text_cache;
+    // Set when lines change position without becoming dirty. Line attributes
+    // move with their lines, so a scrolled line arrives clean at its new y.
+    // A consumer that ships only dirty lines must send everything instead.
+    bool content_moved;
 } LineBuf;
 
 
