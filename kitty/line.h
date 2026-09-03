@@ -86,7 +86,12 @@ typedef union LineAttrs {
         uint8_t has_dirty_text : 1;
         uint8_t has_image_placeholders : 1;
         uint8_t prompt_kind : 2;
-        uint8_t : 4;
+        // Set when a line is blanked in place. Blanking zeroes the attributes,
+        // so it clears has_dirty_text, and the render pass does not care
+        // because it uploads by position. A consumer that ships only the lines
+        // that changed does care. See SERVER-MODE.md section 4.
+        uint8_t text_was_cleared : 1;
+        uint8_t : 3;
     };
     uint8_t val;
 } LineAttrs;

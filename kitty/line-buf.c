@@ -347,6 +347,10 @@ linebuf_clear_line(LineBuf *self, index_type y, bool clear_attrs) {
     zero_at_ptr_count(c, self->xnum);
     zero_at_ptr_count(g, self->xnum);
     if (clear_attrs) self->line_attrs[y].val = 0;
+    // The text of this line changed, and resetting the attributes above threw
+    // away the only record of it. The bit rides with the line through a
+    // rotation, so blanking a line and then scrolling it stays correct.
+    self->line_attrs[y].text_was_cleared = true;
 }
 
 static PyObject *
@@ -438,6 +442,7 @@ linebuf_insert_lines(LineBuf *self, unsigned int num, unsigned int y, unsigned i
         init_line(self, &l, self->line_map[i]);
         clear_line_(&l, self->xnum);
         self->line_attrs[i].val = 0;
+        self->line_attrs[i].text_was_cleared = true;
     }
 }
 
@@ -469,6 +474,7 @@ linebuf_delete_lines(LineBuf *self, index_type num, index_type y, index_type bot
         init_line(self, &l, self->line_map[i]);
         clear_line_(&l, self->xnum);
         self->line_attrs[i].val = 0;
+        self->line_attrs[i].text_was_cleared = true;
     }
 }
 
