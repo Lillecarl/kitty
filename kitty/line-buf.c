@@ -89,8 +89,7 @@ alloc_linebuf_(PyTypeObject *cls, unsigned int lines, unsigned int columns, Text
     if (self != NULL) {
         self->xnum = columns;
         self->ynum = lines;
-        self->cpu_cell_buf =
-            PyMem_Calloc(1, area * (sizeof(CPUCell) + sizeof(GPUCell)) + lines * (sizeof(index_type) + sizeof(index_type) + sizeof(LineAttrs)));
+        self->cpu_cell_buf = PyMem_Calloc(1, area * (sizeof(CPUCell) + sizeof(GPUCell)) + lines * (4 * sizeof(index_type) + 2 * sizeof(LineAttrs)));
         if (!self->cpu_cell_buf) {
             Py_CLEAR(self);
             return NULL;
@@ -98,9 +97,12 @@ alloc_linebuf_(PyTypeObject *cls, unsigned int lines, unsigned int columns, Text
         self->gpu_cell_buf = (GPUCell *)(self->cpu_cell_buf + area);
         self->line_map = (index_type *)(self->gpu_cell_buf + area);
         self->scratch = self->line_map + lines;
+        self->prev_line_map = self->scratch + lines;
+        self->perm = self->prev_line_map + lines;
         self->text_cache = tc_incref(text_cache);
         self->line = alloc_line(self->text_cache);
-        self->line_attrs = (LineAttrs *)(self->scratch + lines);
+        self->line_attrs = (LineAttrs *)(self->perm + lines);
+        self->attrs_scratch = self->line_attrs + lines;
         self->line->xnum = columns;
         for (index_type i = 0; i < lines; i++) {
             self->line_map[i] = i;
@@ -368,7 +370,6 @@ clear_line(LineBuf *self, PyObject *val) {
 void
 linebuf_index(LineBuf *self, index_type top, index_type bottom) {
     if (top >= self->ynum - 1 || bottom >= self->ynum || bottom <= top) return;
-    self->content_moved = true;
     index_type old_top = self->line_map[top];
     LineAttrs old_attrs = self->line_attrs[top];
     const index_type num = bottom - top;
@@ -390,7 +391,6 @@ pyw_index(LineBuf *self, PyObject *args) {
 void
 linebuf_reverse_index(LineBuf *self, index_type top, index_type bottom) {
     if (top >= self->ynum - 1 || bottom >= self->ynum || bottom <= top) return;
-    self->content_moved = true;
     index_type old_bottom = self->line_map[bottom];
     LineAttrs old_attrs = self->line_attrs[bottom];
     for (index_type i = bottom; i > top; i--) {
@@ -429,7 +429,6 @@ linebuf_insert_lines(LineBuf *self, unsigned int num, unsigned int y, unsigned i
     if (y >= self->ynum || y > bottom || bottom >= self->ynum) return;
     index_type ylimit = bottom + 1;
     if (ylimit < y || (num = MIN(ylimit - y, num)) < 1) return;
-    self->content_moved = true;
     const size_t scratch_sz = sizeof(self->scratch[0]) * num;
     memcpy(self->scratch, self->line_map + ylimit - num, scratch_sz);
     for (i = ylimit - 1; i >= y + num; i--) {
@@ -461,7 +460,6 @@ linebuf_delete_lines(LineBuf *self, index_type num, index_type y, index_type bot
     index_type ylimit = bottom + 1;
     num = MIN(bottom + 1 - y, num);
     if (y >= self->ynum || y > bottom || bottom >= self->ynum || num < 1) return;
-    self->content_moved = true;
     const size_t scratch_sz = sizeof(self->scratch[0]) * num;
     memcpy(self->scratch, self->line_map + y, scratch_sz);
     for (i = y; i < ylimit && i + num < self->ynum; i++) {

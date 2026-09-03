@@ -13,16 +13,30 @@ HEADER_SIZE = 19
 CELL_SIZE = 24
 
 
+SNAPSHOT = 1
+HAS_PERMUTATION = 2
+
+
 def visual_state(data):
     """The visual state byte out of a payload header."""
     return struct.unpack_from('<B', data, 4 + 1 + 1 + 2 + 2 + 2 + 2)[0]
 
 
+def permutation(data):
+    """The line permutation a payload carries, or None."""
+    flags, lines = struct.unpack_from('<B', data, 5)[0], struct.unpack_from('<H', data, 8)[0]
+    if not flags & HAS_PERMUTATION:
+        return None
+    return list(struct.unpack_from(f'<{lines}H', data, HEADER_SIZE))
+
+
 def side_table_entries(data):
     """Walk a payload and return its (y, x, codepoints) side table entries."""
     magic, version, flags, columns, lines, cx, cy, visual, records = struct.unpack_from('<IBBHHHHBI', data)
-    assert magic == 0x4C45434B and version == 2
+    assert magic == 0x4C45434B and version == 3
     ans, off = [], HEADER_SIZE
+    if flags & HAS_PERMUTATION:
+        off += 2 * lines
     for _ in range(records):
         y = struct.unpack_from('<H', data, off)[0]
         off += 3 + columns * CELL_SIZE
@@ -141,6 +155,111 @@ class TestCellWire(BaseTest):
         self.ae(dest.cursor.shape, src.cursor.shape)
         self.ae(dest.cursor.blink, src.cursor.blink)
         self.ae(visual_state(dest.serialize_cells(True)), visual_state(payload))
+
+    def test_scrolling_sends_a_permutation_not_the_screen(self):
+        src = self.create_screen(cols=20, lines=6)
+        dest = self.create_screen(cols=20, lines=6)
+        parse_bytes(src, b'\r\n'.join(b'line %d' % i for i in range(6)))
+        dest.apply_serialized_cells(src.serialize_cells(True))
+        self.compare_screens(src, dest)
+
+        # One line of scrolling output. The lines above it did not change, they
+        # only moved, so the payload names the move instead of repeating them.
+        parse_bytes(src, b'\r\nnext line')
+        delta = src.serialize_cells()
+        self.ae(permutation(delta), [1, 2, 3, 4, 5, 0])
+        dest.apply_serialized_cells(delta)
+        self.compare_screens(src, dest)
+
+        # What a scroll costs must not depend on how tall the screen is. That
+        # is the whole point: a taller screen only makes the permutation
+        # longer, by two bytes a line.
+        def cost_of_one_scroll(lines):
+            a, b = self.create_screen(cols=20, lines=lines), self.create_screen(cols=20, lines=lines)
+            parse_bytes(a, b'\r\n'.join(b'line %d' % i for i in range(lines)))
+            b.apply_serialized_cells(a.serialize_cells(True))
+            parse_bytes(a, b'\r\nnext line')
+            d = a.serialize_cells()
+            b.apply_serialized_cells(d)
+            self.compare_screens(a, b)
+            return len(d) - 2 * lines
+
+        small, large = cost_of_one_scroll(6), cost_of_one_scroll(48)
+        self.ae(small, large)
+        # And it is a small multiple of one line, not a screenful.
+        self.assertLess(large, 4 * (20 * CELL_SIZE))
+
+    def test_a_blanked_line_still_travels(self):
+        # Blanking a line zeroes its attributes, which clears the dirty bit.
+        # Without the cleared bit the reader keeps the text that scrolled in.
+        src = self.create_screen(cols=20, lines=4)
+        dest = self.create_screen(cols=20, lines=4)
+        parse_bytes(src, b'aaa\r\nbbb\r\nccc\r\nddd')
+        dest.apply_serialized_cells(src.serialize_cells(True))
+        # Insert a blank line at the top: everything moves down, the top blanks.
+        parse_bytes(src, b'\x1b[H\x1b[L')
+        dest.apply_serialized_cells(src.serialize_cells())
+        self.compare_screens(src, dest)
+        # And delete one, which blanks the bottom.
+        parse_bytes(src, b'\x1b[H\x1b[M')
+        dest.apply_serialized_cells(src.serialize_cells())
+        self.compare_screens(src, dest)
+
+    def test_a_permutation_must_be_one(self):
+        src = self.create_screen(cols=8, lines=4)
+        dest = self.create_screen(cols=8, lines=4)
+        dest.apply_serialized_cells(src.serialize_cells(True))
+        parse_bytes(src, b'a\r\nb\r\nc\r\nd\r\ne')
+        delta = bytearray(src.serialize_cells())
+        self.assertIsNotNone(permutation(bytes(delta)))
+        # Name the same source line twice. A reader that trusted it would lose
+        # a line and keep a stale one in its place.
+        struct.pack_into('<H', delta, HEADER_SIZE + 2, struct.unpack_from('<H', delta, HEADER_SIZE)[0])
+        with self.assertRaises(ValueError):
+            dest.apply_serialized_cells(bytes(delta))
+        # And a source outside the screen.
+        delta = bytearray(src.serialize_cells(True))
+        parse_bytes(src, b'\r\nf')
+        delta = bytearray(src.serialize_cells())
+        struct.pack_into('<H', delta, HEADER_SIZE, 999)
+        with self.assertRaises(ValueError):
+            dest.apply_serialized_cells(bytes(delta))
+
+    def test_a_delta_survives_any_sequence_of_operations(self):
+        # The permutation has to describe whatever the rotations did, in any
+        # order, including the ones that blank a line as they go. Enumerating
+        # those by hand is how a case gets missed, so drive it randomly and
+        # compare after every single delta.
+        import random
+
+        rnd = random.Random(1234)
+        src = self.create_screen(cols=16, lines=8)
+        dest = self.create_screen(cols=16, lines=8)
+        dest.apply_serialized_cells(src.serialize_cells(True))
+        words = [b'alpha', b'beta', b'gamma', b'delta', b'epsilon', b'zeta']
+        for i in range(400):
+            what = rnd.randrange(10)
+            if what < 3:
+                parse_bytes(src, rnd.choice(words) + b'\r\n')
+            elif what == 3:
+                parse_bytes(src, b'\x1b[%d;%dH' % (rnd.randint(1, 8), rnd.randint(1, 16)))
+            elif what == 4:
+                parse_bytes(src, b'\x1b[%dL' % rnd.randint(1, 3))
+            elif what == 5:
+                parse_bytes(src, b'\x1b[%dM' % rnd.randint(1, 3))
+            elif what == 6:
+                top = rnd.randint(1, 6)
+                parse_bytes(src, b'\x1b[%d;%dr' % (top, rnd.randint(top + 1, 8)))
+            elif what == 7:
+                parse_bytes(src, b'\x1bM' if rnd.random() < 0.5 else b'\x1bD')
+            elif what == 8:
+                parse_bytes(src, rnd.choice((b'\x1b[2J', b'\x1b[K', b'\x1b[1J')))
+            else:
+                # The alternate screen holds different content, so the reader
+                # cannot rearrange its way there. This must fall back.
+                parse_bytes(src, rnd.choice((b'\x1b[?1049h', b'\x1b[?1049l')))
+            dest.apply_serialized_cells(src.serialize_cells())
+            self.compare_screens(src, dest)
 
     def test_scrolling_content_reaches_the_client(self):
         # Lines that scroll up keep their attributes, so they arrive clean at

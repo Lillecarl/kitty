@@ -24,7 +24,7 @@
 // sprite_idx is not sent either. The reader derives it when it shapes.
 
 #define CELL_WIRE_MAGIC 0x4c45434bu // "KCEL" little-endian
-#define CELL_WIRE_VERSION 2u
+#define CELL_WIRE_VERSION 3u
 // magic, version, flags, columns, lines, cursor x, cursor y, visual state,
 // record count. A payload of exactly this size carries no lines, so nothing
 // changed.
@@ -34,6 +34,15 @@
 // that asks for a delta still gets one when lines have moved without becoming
 // dirty.
 #define CELL_WIRE_SNAPSHOT 1u
+
+// CELL_WIRE_HAS_PERMUTATION says a lines * uint16 vector follows the header,
+// before the line records. Entry y names the y the line at y came from. It is
+// how scrolling travels: the lines themselves did not change, only their
+// order, so repeating the permutation costs two bytes a line instead of a
+// screenful. zlib cannot do this for us, because its window is 32 KB and a
+// screenful of cells is several times that, so the previous copy of a scrolled
+// line is out of its reach.
+#define CELL_WIRE_HAS_PERMUTATION 2u
 
 // The visual state byte. These belong in the header and not in an out of band
 // event, because they change as often as the cells do: a curses application

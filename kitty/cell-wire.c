@@ -181,15 +181,30 @@ bool
 cell_wire_serialize(Screen *screen, bool snapshot, CellWireBuf *buf) {
     // Line attributes travel with their lines, so a line that scrolls up
     // arrives clean at its new position. Dirtiness alone would leave the
-    // reader stale, so a buffer that moved sends everything. Consecutive
-    // frames of scrolling output repeat almost verbatim, which is what the
-    // stream compressor is for.
-    const bool all_lines = snapshot || screen->linebuf->content_moved;
+    // reader stale. So the permutation the lines went through goes on the
+    // wire, and the reader repeats it instead of taking the lines again.
+    // Without a previous map to compare against there is nothing to repeat.
+    LineBuf *lb = screen->linebuf;
+    const bool all_lines = snapshot || lb->content_moved || !lb->prev_line_map_valid;
+    // perm[y] is the y this line held in the previous frame. Build it from the
+    // reverse of the previous map: a slot index identifies a line's storage,
+    // and the rotations only ever move those indices around.
+    bool has_permutation = false;
+    if (!all_lines) {
+        // scratch holds the reverse of the previous map, so scratch[slot] is
+        // the y that slot sat at. Then perm[y] is where the line at y came
+        // from. Both passes are linear.
+        for (index_type y = 0; y < lb->ynum; y++) lb->scratch[lb->prev_line_map[y]] = y;
+        for (index_type y = 0; y < lb->ynum; y++) {
+            lb->perm[y] = lb->scratch[lb->line_map[y]];
+            if (lb->perm[y] != y) has_permutation = true;
+        }
+    }
     buf->used = 0;
     if (!cell_wire_buf_reserve(buf, HEADER_SIZE)) return false;
     write_u32(buf, CELL_WIRE_MAGIC);
     write_u8(buf, CELL_WIRE_VERSION);
-    write_u8(buf, all_lines ? CELL_WIRE_SNAPSHOT : 0u);
+    write_u8(buf, (all_lines ? CELL_WIRE_SNAPSHOT : 0u) | (has_permutation ? CELL_WIRE_HAS_PERMUTATION : 0u));
     write_u16(buf, (uint16_t)screen->columns);
     write_u16(buf, (uint16_t)screen->lines);
     write_u16(buf, (uint16_t)screen->cursor->x);
@@ -205,14 +220,22 @@ cell_wire_serialize(Screen *screen, bool snapshot, CellWireBuf *buf) {
     write_u8(buf, visual);
     const size_t record_count_pos = buf->used;
     write_u32(buf, 0); // patched below
+    if (has_permutation) {
+        if (!cell_wire_buf_reserve(buf, 2u * lb->ynum)) return false;
+        for (index_type y = 0; y < lb->ynum; y++) write_u16(buf, (uint16_t)lb->perm[y]);
+    }
     RAII_ListOfChars(lc);
     uint32_t records = 0;
     Line line = {.text_cache = screen->text_cache};
     for (index_type y = 0; y < screen->lines; y++) {
         linebuf_init_line_at(screen->linebuf, y, &line);
-        if (!all_lines && !line.attrs.has_dirty_text) continue;
+        // A blanked line is not dirty, because blanking zeroed the attributes.
+        // The reader cannot infer it from the permutation either: the line
+        // moved and was emptied, and only the move is on the wire.
+        if (!all_lines && !line.attrs.has_dirty_text && !line.attrs.text_was_cleared) continue;
         if (!serialize_line(screen, y, &line, buf, &lc)) return false;
         linebuf_mark_line_clean(screen->linebuf, y);
+        screen->linebuf->line_attrs[y].text_was_cleared = false;
         records++;
     }
     // Nothing else consumes dirtiness in server mode, because render() does
@@ -220,7 +243,10 @@ cell_wire_serialize(Screen *screen, bool snapshot, CellWireBuf *buf) {
     // whole screen.
     screen->is_dirty = false;
     screen->history_line_added_count = 0;
-    screen->linebuf->content_moved = false;
+    lb->content_moved = false;
+    // Whatever the lines do next, this is the arrangement they do it from.
+    memcpy(lb->prev_line_map, lb->line_map, sizeof(lb->line_map[0]) * lb->ynum);
+    lb->prev_line_map_valid = true;
     buf->data[record_count_pos] = records & 0xff;
     buf->data[record_count_pos + 1] = (records >> 8) & 0xff;
     buf->data[record_count_pos + 2] = (records >> 16) & 0xff;
@@ -241,7 +267,7 @@ cell_wire_apply(Screen *screen, const uint8_t *data, size_t sz) {
         PyErr_Format(PyExc_ValueError, "Unsupported cell wire version: %u", version);
         return false;
     }
-    read_u8(&r); // flags: a delta and a snapshot apply the same way
+    const uint8_t flags = read_u8(&r);
     const uint16_t columns = read_u16(&r), lines = read_u16(&r);
     if (columns != screen->columns || lines != screen->lines) {
         PyErr_Format(PyExc_ValueError, "Payload is for a %ux%u screen, this screen is %ux%u", columns, lines, screen->columns, screen->lines);
@@ -250,6 +276,30 @@ cell_wire_apply(Screen *screen, const uint8_t *data, size_t sz) {
     const uint16_t cursor_x = read_u16(&r), cursor_y = read_u16(&r);
     const uint8_t visual = read_u8(&r);
     const uint32_t records = read_u32(&r);
+    LineBuf *lb = screen->linebuf;
+    if (flags & CELL_WIRE_HAS_PERMUTATION) {
+        // Repeat the move the sender's lines made, so that the records after
+        // it describe the arrangement the sender had.
+        if (!have(&r, 2u * (size_t)lines)) return false;
+        memset(lb->attrs_scratch, 0, sizeof(lb->attrs_scratch[0]) * lines);
+        for (index_type y = 0; y < lines; y++) {
+            const uint16_t src = read_u16(&r);
+            // It has to be a permutation. Anything else would drop or double a
+            // line, and the buffer would stop being a rearrangement of itself.
+            if (src >= lines || lb->attrs_scratch[src].val) {
+                PyErr_SetString(PyExc_ValueError, "The line permutation is not a permutation");
+                return false;
+            }
+            lb->attrs_scratch[src].val = 1;
+            lb->perm[y] = src;
+        }
+        for (index_type y = 0; y < lines; y++) {
+            lb->scratch[y] = lb->line_map[lb->perm[y]];
+            lb->attrs_scratch[y] = lb->line_attrs[lb->perm[y]];
+        }
+        memcpy(lb->line_map, lb->scratch, sizeof(lb->line_map[0]) * lines);
+        memcpy(lb->line_attrs, lb->attrs_scratch, sizeof(lb->line_attrs[0]) * lines);
+    }
     RAII_ListOfChars(lc);
     Line line = {.text_cache = screen->text_cache};
     for (uint32_t rec = 0; rec < records; rec++) {

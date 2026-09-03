@@ -19,10 +19,20 @@ typedef struct {
     LineAttrs *line_attrs;
     Line *line;
     TextCache *text_cache;
-    // Set when lines change position without becoming dirty. Line attributes
-    // move with their lines, so a scrolled line arrives clean at its new y.
-    // A consumer that ships only dirty lines must send everything instead.
+    // Set when the whole buffer stops describing what a consumer last saw, so
+    // that nothing short of a full resend will do. Switching between the main
+    // and the alternate buffer does it. Scrolling does not: line_map records
+    // where the lines went, and prev_line_map recovers the move.
     bool content_moved;
+    // line_map as of the last serialization, and whether it holds one. The
+    // difference between the two maps is the permutation the lines went
+    // through, which a consumer can repeat instead of taking the lines again.
+    index_type *prev_line_map;
+    bool prev_line_map_valid;
+    // Working room for that permutation. Sized with the buffer so that
+    // serializing allocates nothing.
+    index_type *perm;
+    LineAttrs *attrs_scratch;
 } LineBuf;
 
 
