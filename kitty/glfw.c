@@ -2321,6 +2321,15 @@ on_os_window_font_size_change(OSWindow *os_window, double new_sz) {
     double xdpi, ydpi;
     float xscale, yscale;
     get_os_window_content_scale(os_window, &xdpi, &ydpi, &xscale, &yscale);
+    if (global_state.is_server) {
+        // Font size belongs to the client, which owns the fonts and derives the
+        // cell size from them. Record the nominal size but keep the cell
+        // metrics the client sent, and keep this window's allocation so that
+        // replacing it does not leak.
+        os_window->fonts_data->font_sz_in_pts = new_sz;
+        os_window_update_size_increments(os_window);
+        return;
+    }
     os_window->fonts_data = load_fonts_data(new_sz, xdpi, ydpi);
     os_window_update_size_increments(os_window);
     if (os_window->is_layer_shell) set_layer_shell_config_for(os_window, NULL);

@@ -1465,6 +1465,45 @@ PYWRAP1(global_font_size) {
     return Py_BuildValue("d", OPT(font_size));
 }
 
+// Push a changed cell size into every screen the OS window owns.
+static void
+resize_all_screens_for_os_window(OSWindow *os_window) {
+    resize_screen(os_window, os_window->tab_bar_render_data.screen, false);
+    for (size_t ti = 0; ti < os_window->num_tabs; ti++) {
+        Tab *tab = os_window->tabs + ti;
+        for (size_t wi = 0; wi < tab->num_windows; wi++) {
+            Window *w = tab->windows + wi;
+            resize_screen(os_window, w->render_data.screen, true);
+        }
+    }
+}
+
+PYWRAP1(set_os_window_cell_size) {
+#define set_os_window_cell_size_doc "set_os_window_cell_size(os_window_id, cell_width, cell_height, dpi_x, dpi_y) -> Report the attached client's cell metrics"
+    id_type os_window_id;
+    unsigned int cell_width, cell_height;
+    double dpi_x = 0, dpi_y = 0;
+    PA("KII|dd", &os_window_id, &cell_width, &cell_height, &dpi_x, &dpi_y);
+    if (!global_state.is_server) {
+        PyErr_SetString(PyExc_ValueError, "Cell metrics can only be set in server mode, where they come from the attached client");
+        return NULL;
+    }
+    if (!cell_width || !cell_height) {
+        PyErr_SetString(PyExc_ValueError, "Cell width and height must both be non-zero");
+        return NULL;
+    }
+    WITH_OS_WINDOW(os_window_id)
+    os_window->fonts_data->fcm.cell_width = cell_width;
+    os_window->fonts_data->fcm.cell_height = cell_height;
+    if (dpi_x > 0) os_window->fonts_data->logical_dpi_x = dpi_x;
+    if (dpi_y > 0) os_window->fonts_data->logical_dpi_y = dpi_y;
+    // No window manager to hint about size increments here.
+    resize_all_screens_for_os_window(os_window);
+    Py_RETURN_TRUE;
+    END_WITH_OS_WINDOW
+    Py_RETURN_FALSE;
+}
+
 PYWRAP1(os_window_font_size) {
     id_type os_window_id;
     int force = 0;
@@ -1474,14 +1513,7 @@ PYWRAP1(os_window_font_size) {
     if (new_sz > 0 && (force || new_sz != os_window->fonts_data->font_sz_in_pts)) {
         on_os_window_font_size_change(os_window, new_sz);
         send_prerendered_sprites_for_window(os_window);
-        resize_screen(os_window, os_window->tab_bar_render_data.screen, false);
-        for (size_t ti = 0; ti < os_window->num_tabs; ti++) {
-            Tab *tab = os_window->tabs + ti;
-            for (size_t wi = 0; wi < tab->num_windows; wi++) {
-                Window *w = tab->windows + wi;
-                resize_screen(os_window, w->render_data.screen, true);
-            }
-        }
+        resize_all_screens_for_os_window(os_window);
         // On Wayland with CSD title needs to be re-rendered in a different font size
         if (os_window->window_title && global_state.is_wayland) set_os_window_title(os_window, NULL);
     }
@@ -2102,6 +2134,7 @@ static PyMethodDef module_methods[] = {
     MW(global_font_size, METH_VARARGS),
     {"set_background_image", (PyCFunction)(void (*)(void))pyset_background_image, METH_VARARGS | METH_KEYWORDS, ""},
     MW(os_window_font_size, METH_VARARGS),
+    MW(set_os_window_cell_size, METH_VARARGS),
     MW(set_os_window_size, METH_VARARGS),
     MW(get_os_window_size, METH_VARARGS),
     MW(os_window_is_invisible, METH_O),

@@ -594,6 +594,9 @@ def update_window_visibility(os_window_id: int, tab_id: int, window_id: int, vis
 def sync_os_window_title(os_window_id: int) -> None:
     pass
 
+def set_os_window_cell_size(os_window_id: int, cell_width: int, cell_height: int, dpi_x: float = 0, dpi_y: float = 0) -> bool: ...
+
+
 def set_options(
     opts: Optional[Options], is_wayland: bool = False, debug_rendering: bool = False, debug_font_fallback: bool = False, is_server: bool = False
 ) -> None:
