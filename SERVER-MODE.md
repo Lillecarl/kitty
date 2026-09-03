@@ -121,7 +121,7 @@ a peer exists, so it gets settled and tested alone. `kitty_tests/cell_wire.py`
 writes into one `Screen`, applies the payload to a second, and compares them
 cell by cell.
 
-The format is 18 bytes of header, then one record per line: the line
+The format is 19 bytes of header, then one record per line: the line
 attributes, a flat array of 24-byte cells, and a side table. A cell is six
 little-endian `uint32`s — the codepoint, the packed `CPUCell` flags, and
 `fg`/`bg`/`decoration_fg`/`attrs` from the `GPUCell`. Nothing is blitted,
@@ -305,8 +305,25 @@ length prefix that `receive` never read, so an uncompressed channel returned
 nothing at all. Only the compressed path had a framer. Nothing had noticed,
 because nothing flowed from the client.
 
-Not yet: screen modes, cursor visibility and shape, and window titles are not
-carried — see §7.
+**A client can now draw a cursor.** Version 1 of the wire sent the cursor
+position and nothing else, so a mirror knew where the cursor was but not
+whether to show it. Visibility, shape, blink and reverse video now travel in
+the header as one byte, which bumps `CELL_WIRE_VERSION` to 2.
+
+The header, and not an event beside it, because a curses application hides the
+cursor, redraws and shows it again on every frame. That is per frame state, the
+same as the position it has to agree with. An event would flash a cursor at a
+stale place. The sender reads through `screen_is_cursor_visible` and
+`screen_invert_colors`, so a paused rendering resolves to what the render pass
+would show.
+
+Titles are the opposite case: rare, and not tied to a frame. They ride the
+`os_windows` event, whose `windows` list now carries dicts rather than bare
+ids. The pump already diffs that event and sends it only on a change, so this
+needed no new machinery, and per window layout lands in the same place later.
+
+Not yet: the modes that are neither per frame nor layout. Mouse tracking waits
+for the mouse work, and runtime `OSC 4/10/11` is still §7 question 1.
 
 Known gap: `attrs.mark` is always zero, because `mark_text_in_line` runs in the
 render pass the server does not run. Marks are presentation config, so they
@@ -943,11 +960,21 @@ keybindings are client-side. All three are in Settled decisions above.
    width, scale and alignment fields it is given. The transport is a unix
    socket over SSH, so the sender is as trusted as the user, but a malformed
    payload should still fail cleanly rather than draw nonsense.
-4. What carries the state that is not cells? Screen modes, cursor visibility
-   and shape, and window titles are all things a client must show, and none of
-   them live in a cell. The `os_windows` event covers the layout; the rest need
-   events of their own. The alternate screen only looks right today because
-   switching buffers sets `content_moved`.
+4. Mostly answered. State that is not cells splits by how often it changes.
+   Per frame visual state — cursor visibility, shape, blink, and reverse video
+   — goes in the wire header, because a curses application toggles the cursor
+   on every frame and an out of band event would draw it at a stale position.
+   Titles change rarely and ride the `os_windows` event. What is left is the
+   modes that are neither: mouse tracking belongs with the mouse work, and
+   `OSC 4/10/11` is question 1. The alternate screen only looks right today
+   because switching buffers sets `content_moved`.
 5. Where do marks live? `attrs.mark` comes from `mark_text_in_line`, which the
    server does not run. Marker patterns are config, so the client can apply
    them itself, but then a `scroll_to_next_mark` needs a client-side answer.
+6. The serializer ignores mode 2026, the synchronized update. It can ship a
+   frame from the middle of one. The visual state byte reads through
+   `screen_is_cursor_visible` and `screen_invert_colors`, so it already
+   resolves a paused rendering, but the cells do not.
+7. The `text` event does not bracket a paste. The server knows the bracketed
+   paste mode, so a `paste` event that wraps server-side is the answer. It
+   belongs with the mouse and named action work, which shares the envelope.
