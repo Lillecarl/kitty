@@ -112,6 +112,7 @@ from .fast_data_types import (
     os_window_focus_counters,
     os_window_font_size,
     redirect_mouse_handling,
+    remove_timer,
     request_callback_with_thumbnail,
     ring_bell,
     run_with_activation_token,
@@ -182,6 +183,7 @@ from .utils import (
 from .window import CommandOutput, CwdRequest, Window, global_watchers
 
 if TYPE_CHECKING:
+    from .attach import DataChannel
     from .fast_data_types import OSWindowSize
     from .rc.base import ResponseType
 # }}}
@@ -420,6 +422,7 @@ class Boss:
         self.primary_selection = Clipboard(ClipboardType.primary_selection)
         self.update_check_started = False
         self.peer_data_map: dict[int, dict[str, Sequence[str]] | None] = {}
+        self.data_channel_timer_id = 0
         self.background_process_death_notify_map: dict[int, Callable[[int, Exception | None], None]] = {}
         self.encryption_key = EllipticCurveKey()
         self.encryption_public_key = f'{RC_ENCRYPTION_PROTOCOL_VERSION}:{base64.b85encode(self.encryption_key.public).decode("ascii")}'
@@ -990,10 +993,13 @@ class Boss:
                 return None
             raise
 
-    def peer_message_received(self, msg_bytes: bytes, peer_id: int, is_remote_control: bool) -> bytes | bool | None:
+    def peer_message_received(self, msg_bytes: bytes, peer_id: int, is_remote_control: bool, is_stream: bool = False) -> bytes | bool | None:
         if peer_id > 0 and msg_bytes == b'peer_death':
             self.peer_data_map.pop(peer_id, None)
+            self.data_channel_closed(peer_id)
             return False
+        if is_stream:
+            return self.data_channel_message(msg_bytes, peer_id)
         if is_remote_control:
             cmd_prefix = b'\x1bP@kitty-cmd'
             terminator = b'\x1b\\'
@@ -1105,6 +1111,110 @@ class Boss:
     def quick_access_terminal_invoked(self) -> None:
         for os_window_id in self.os_window_map:
             toggle_os_window_visibility(os_window_id, move_to_active_screen=True)
+
+    # Server mode data channel {{{
+
+    def data_channel_message(self, msg_bytes: bytes, peer_id: int) -> bytes | None:
+        """Handle bytes from a client's data channel.
+
+        The first message is the preamble, which is uncompressed and names the
+        attachment. Everything after it belongs to the stream.
+        """
+        from .attach import CHANNEL_PREAMBLE, ProtocolError, attachments, parse_preamble
+
+        channel = attachments.channel_for_peer(peer_id)
+        if channel is None:
+            if not msg_bytes.startswith(CHANNEL_PREAMBLE):
+                return b'ERR Not a kitty data channel\n'
+            try:
+                attachments.open_channel(parse_preamble(msg_bytes), peer_id)
+            except ProtocolError as err:
+                return f'ERR {err}\n'.encode()
+            self.start_data_channel_pump()
+            # Uncompressed, like the preamble. The stream starts after it.
+            return b'OK\n'
+        for message in channel.receive(msg_bytes):
+            self.data_channel_client_message(bytes(message))
+        return None
+
+    def data_channel_client_message(self, message: bytes) -> None:
+        # Nothing flows from the client yet. Input and viewport changes land
+        # here once a client exists.
+        pass
+
+    def data_channel_closed(self, peer_id: int) -> None:
+        from .attach import attachments
+
+        attachments.peer_died(peer_id)
+
+    def start_data_channel_pump(self) -> None:
+        if self.data_channel_timer_id:
+            return
+        # render() returns early in server mode, so nothing paces the frames.
+        # A timer at the repaint interval does instead.
+        self.data_channel_timer_id = add_timer(self.pump_data_channel, get_options().repaint_delay / 1000.0, True)
+
+    def sync_data_channel_geometry(self, channel: 'DataChannel') -> None:
+        """Keep the client's picture of the OS windows current.
+
+        An OS window opened after the client attached has the server's default
+        geometry, which is meaningless: only the client knows how big a cell
+        is. So lay it out for the attached client, then tell the client about
+        it, since the cell payloads say nothing about which OS window they
+        belong to.
+        """
+        from .attach import ProtocolError, apply_client_viewport, event_message, os_window_geometry
+
+        metrics = channel.attachment.metrics
+        for os_window_id in tuple(self.os_window_map):
+            if os_window_id in channel.os_windows or not metrics:
+                continue
+            try:
+                apply_client_viewport(self, os_window_id, **metrics)
+            except ProtocolError as err:
+                log_error(f'Could not lay out OS Window {os_window_id} for the attached client: {err}')
+            channel.os_windows.add(os_window_id)
+        geometry = [os_window_geometry(self, i) for i in tuple(self.os_window_map)]
+        if geometry != channel.geometry:
+            channel.geometry = geometry
+            channel.os_windows = {g['id'] for g in geometry}
+            channel.send(event_message({'event': 'os_windows', 'os_windows': geometry}))
+
+    def pump_data_channel(self, timer_id: int | None = None) -> None:
+        from .attach import WRITE_HIGH_WATER, attachments, frame_message
+        from .fast_data_types import CELL_WIRE_HEADER_SIZE
+
+        channel = attachments.channel
+        if channel is None:
+            if self.data_channel_timer_id:
+                remove_timer(self.data_channel_timer_id)
+                self.data_channel_timer_id = 0
+            return
+        queued = channel.queued()
+        if queued < 0:
+            attachments.peer_died(channel.peer_id)
+            return
+        # Never serialize into a socket that cannot take it. Serializing
+        # consumes dirtiness, so a frame made now and dropped is lost for good.
+        # Leaving the screens dirty coalesces the work into a later tick.
+        if queued >= WRITE_HIGH_WATER:
+            return
+        self.sync_data_channel_geometry(channel)
+        live = set()
+        for window_id, window in self.window_id_map.items():
+            live.add(window_id)
+            snapshot = window_id not in channel.known
+            payload = window.screen.serialize_cells(snapshot)
+            channel.known.add(window_id)
+            # A payload of exactly a header carries no lines, so there is
+            # nothing to say about this window this tick.
+            if len(payload) <= CELL_WIRE_HEADER_SIZE:
+                continue
+            if channel.send(frame_message(window_id, payload)) >= WRITE_HIGH_WATER:
+                break
+        channel.known &= live
+
+    # }}}
 
     def handle_remote_cmd(self, cmd: memoryview, window: Window | None = None) -> None:
         response = self._handle_remote_command(cmd, window)

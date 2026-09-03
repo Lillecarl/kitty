@@ -1005,6 +1005,7 @@ PyInit_fast_data_types(void) {
 #undef s
     PyModule_AddIntConstant(m, "MARK_MASK", MARK_MASK);
     PyModule_AddIntMacro(m, CELL_WIRE_VERSION);
+    PyModule_AddIntMacro(m, CELL_WIRE_HEADER_SIZE);
     PyModule_AddIntConstant(m, "DECORATION_MASK", DECORATION_MASK);
     PyModule_AddStringMacro(m, ERROR_PREFIX);
 #ifdef KITTY_VCS_REV

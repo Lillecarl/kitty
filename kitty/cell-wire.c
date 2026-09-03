@@ -9,8 +9,7 @@
 
 #include "lineops.h"
 
-// Header: magic, version, flags, columns, lines, cursor x, cursor y, records
-#define HEADER_SIZE (4u + 1u + 1u + 2u + 2u + 2u + 2u + 4u)
+#define HEADER_SIZE CELL_WIRE_HEADER_SIZE
 #define CELL_SIZE (6u * 4u)
 
 // Bit layout of the packed CPUCell flags word. 31 bits are in use.

@@ -142,7 +142,8 @@ Vertical logical DPI of the client display.
                 )
         except ProtocolError as err:
             raise RemoteControlErrorWithoutTraceback(str(err)) from err
-        attachment, superseded = attachments.attach(int(payload_get('peer_id') or 0), str(payload_get('client') or ''), compression)
+        metrics = {k: payload_get(k) for k in ('cell_width', 'cell_height', 'width', 'height', 'dpi_x', 'dpi_y') if payload_get(k)}
+        attachment, superseded = attachments.attach(int(payload_get('peer_id') or 0), str(payload_get('client') or ''), compression, metrics)
         return {
             'attachment_id': attachment.id,
             'protocol_version': SERVER_PROTOCOL_VERSION,

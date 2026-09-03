@@ -25,6 +25,9 @@
 
 #define CELL_WIRE_MAGIC 0x4c45434bu // "KCEL" little-endian
 #define CELL_WIRE_VERSION 1u
+// magic, version, flags, columns, lines, cursor x, cursor y, record count.
+// A payload of exactly this size carries no lines, so nothing changed.
+#define CELL_WIRE_HEADER_SIZE (4u + 1u + 1u + 2u + 2u + 2u + 2u + 4u)
 
 // Header flags. CELL_WIRE_SNAPSHOT says the payload holds every line. A caller
 // that asks for a delta still gets one when lines have moved without becoming
