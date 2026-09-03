@@ -24,6 +24,66 @@ persistence, but the client must be kitty, not an arbitrary terminal.
   stream per connection (§2).
 - **Wire format ships cells, not sprites and not escape codes** (§4).
 
+## Progress
+
+**Spike 1 is done.** kitty runs headless, with no display and no GL context.
+
+Verified end to end: it starts with no display, `kitty @ ls` reports a window,
+text sent over the socket reaches a real shell and comes back through
+`kitty @ get-text`, a second OS window opens, and it exits cleanly with no GLFW
+or GLAD complaints. That last point is the one that matters, because it proves
+VT parsing produces a correct cell grid with no display anywhere.
+
+Measured while doing it, on a bare `Screen` with rendering excluded: ASCII
+37.6 MB/s, Unicode 38.5 MB/s, CSI codes 28.6 MB/s, long escape codes
+143.7 MB/s, images 138.1 MB/s. The outlier is unique multi-codepoint cells at
+0.7 MB/s, which is the TextCache path from §2 and roughly 50x slower than
+normal text. Synthetic, but worth knowing. The server does strictly less CPU
+work than a normal kitty, because it drops shaping along with rendering.
+
+Two things learned that the plan did not anticipate:
+
+- **The vendored null GLFW platform had real bitrot.** Nothing has built it
+  since kitty's GLFW diverged from upstream, so half a dozen platform
+  signatures had moved, the drag-and-drop and clipboard entry points had been
+  replaced, and a key-name table still used the pre-rename `GLFW_KEY_`
+  constants. Two fixes were needed outside the null files, in `internal.h` and
+  `input.c`, on branches no display backend compiles.
+- **GL is touched in more places than `render()`.** Skipping `initialize_gpu`
+  leaves every GL function pointer NULL, which turns each missed site into an
+  exact backtrace. The sites found: per-window and per-tab VAO creation, the
+  border VAO, the sprite map's `glGetIntegerv` limit query, prerendered
+  box-drawing sprites, and `make_os_window_context_current`. Guarding the VAO
+  helpers on a negative index covered a whole class at once, rather than
+  guarding each caller.
+
+**The geometry half of spike 2 already works.** Layout runs server-side in
+pixels, so an external caller driving `resize-os-window --unit pixels` exercises
+the exact chain a client will: viewport pixels reflow the layout, resize the
+grid, and deliver `SIGWINCH` to the child. Verified headless at 1200x800,
+400x300 and 1920x1080, with the shell's own `stty size` matching the grid
+`kitty @ ls` reports each time.
+
+That was mostly free, because §5.1's plan — keep layout on the server and feed
+it client-supplied pixels — matches what kitty already does. Only two more GL
+sites needed gating: the framebuffer size callback sets the GPU viewport, and
+the live resize path sets the swap interval.
+
+What remains of spike 2 is the other half: `cell_px` currently comes from
+server-side fonts rather than from the client, and there is no attach protocol
+to carry either number yet.
+
+Known gap: the server still loads fonts, because `create_os_window` derives
+window geometry from cell metrics. Spike 2 replaces that with client-supplied
+`(viewport_px, cell_px)`, after which the server needs no fonts at all, as §4
+intends.
+
+Unrelated to this work: two fish shell-integration tests fail in this checkout.
+fish 4.8.1 is newer than this kitty tag targets, and those tests exercise only
+shell scripts and a PTY.
+
+---
+
 Sizing: ~6–9k LOC. Weeks to a single-client prototype, months to shippable.
 The bulk of the work is not the cell pipeline; it is unpicking the assumption
 that an OS window exists (§5.1).
@@ -470,7 +530,7 @@ handshake with a declared compatibility window, not a bare equality check.
 
 ## 6. Spike order
 
-1. **Headless build.** Loop backend over `backend_utils.c` providing
+1. **Headless build.** *(done)* Loop backend over `backend_utils.c` providing
    `run_main_loop` / `add_main_loop_timer` / `wakeup_main_loop` /
    `stop_main_loop` with no display, selected by `--server` alongside the
    existing `glfw-{module}.so` mechanism; replace the `null_window.c` no-op
@@ -478,7 +538,7 @@ handshake with a declared compatibility window, not a bare equality check.
    `kitty @ ls` / `kitty @ get-text` show a live correctly-parsed screen with no
    window anywhere. Useful on its own, and proves the parse path is display-free.
 
-2. **Virtual OS window.** The client-viewport abstraction; route layout through
+2. **Virtual OS window.** *(geometry done; cell metrics still server-side)* The client-viewport abstraction; route layout through
    client-supplied `(viewport_px, cell_px)`. **Demo:** `kitty @ ls` reports sane
    geometry for a window nobody displays, and layouts respond to a simulated
    resize.
