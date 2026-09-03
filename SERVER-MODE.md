@@ -177,6 +177,34 @@ linebuf. It converges with history streaming, because a line that scrolls off
 `history_line_added_count`, which counts exactly the lines spike 4 has to ship.
 That delta must emit them before the reset.
 
+**The compressed stream is in, and it settles the cost question.** One deflate
+stream per connection, `Z_SYNC_FLUSH` per message, and a length prefix written
+*inside* the stream so it compresses too. `CellStreamReader` assembles messages
+from whatever chunks a socket hands over, which a test checks by feeding a byte
+at a time.
+
+Measured at level 1 on a 200x50 screen, where a raw payload is 240 KB:
+
+| frame | compressed |
+|---|---|
+| blank snapshot | 1.2 KB |
+| an `ls` screenful, attach-time snapshot | 7.9 KB |
+| one keystroke | 71 bytes |
+| one line of scrolling output | 8.0 KB |
+
+The first three are comfortable. Attach costs single-digit KB per window, and
+typing costs nothing. The fourth is the price of the full resend above: at
+60 fps, scrolling output is ~480 KB/s on the wire. Survivable on a LAN, wrong
+over a slow link, and the number that justifies the spike 4 scroll record.
+
+One rule for the sender, tighter than §2 says. Serialization *consumes*
+dirtiness: it marks the lines it sends clean and clears `content_moved`. So a
+frame that is serialized and then dropped is lost for the rest of the
+connection, because nothing resends those lines. §2 presents coalescing under
+backpressure as an optimization. It is a correctness rule: **do not serialize
+until the socket can take the output.** A reconnect is safe, because attach
+starts with a snapshot; backpressure inside a connection is not.
+
 Known gap: `attrs.mark` is always zero, because `mark_text_in_line` runs in the
 render pass the server does not run. Marks are presentation config, so they
 belong on the client (§7).
@@ -650,13 +678,13 @@ handshake with a declared compatibility window, not a bare equality check.
    geometry for a window nobody displays, and layouts respond to a simulated
    resize.
 
-3. **Cell protocol, visible region only.** *(format done, transport open)*
-   Serializer walking the linebuf and emitting dirty lines as (text, style);
-   the reader rebuilds `Line`s and runs `render_line` locally. The view
-   traversal is deliberately not mirrored — see the progress notes. Still to
-   come: the unix socket over SSH, the two channels per §3, the long-lived
-   zlib stream, and a real client on the far end. **Demo:** attach from a
-   laptop, see the remote shell, type, detach, reattach, state intact.
+3. **Cell protocol, visible region only.** *(format and compression done,
+   transport open)* Serializer walking the linebuf and emitting dirty lines as
+   (text, style); the reader rebuilds `Line`s and runs `render_line` locally.
+   The view traversal is deliberately not mirrored — see the progress notes.
+   Still to come: the unix socket over SSH, the two channels per §3, and a real
+   client on the far end. **Demo:** attach from a laptop, see the remote shell,
+   type, detach, reattach, state intact.
 
 4. **Client-side scrollback.** Compressed raw-array bulk transfer plus the
    codepoint side table for `ch_is_idx` cells (§2); background history
