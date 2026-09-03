@@ -42,7 +42,7 @@ typedef struct {
     char *data;
     size_t sz;
     id_type peer_id;
-    bool is_remote_control_peer;
+    bool is_remote_control_peer, is_stream_peer;
 } Message;
 
 typedef struct {
@@ -591,11 +591,12 @@ parse_input(ChildMonitor *self) {
                 resp = PyObject_CallMethod(
                     global_state.boss,
                     "peer_message_received",
-                    "y#KO",
+                    "y#KOO",
                     msg->data,
                     (int)msg->sz,
                     msg->peer_id,
-                    msg->is_remote_control_peer ? Py_True : Py_False);
+                    msg->is_remote_control_peer ? Py_True : Py_False,
+                    msg->is_stream_peer ? Py_True : Py_False);
                 free(msg->data);
                 if (!resp) PyErr_Print();
             }
@@ -1923,6 +1924,9 @@ typedef struct {
         bool failed;
     } write;
     bool is_remote_control_peer;
+    // A data channel for a kitty client attached to a server. It shares the
+    // socket with remote control, and is told apart by its first bytes.
+    bool is_stream_peer;
 } Peer;
 static id_type peer_id_counter = 0;
 
@@ -2041,6 +2045,7 @@ queue_peer_message(ChildMonitor *self, Peer *peer) {
     }
     m->peer_id = peer->id;
     m->is_remote_control_peer = peer->is_remote_control_peer;
+    m->is_stream_peer = peer->is_stream_peer;
     peer->num_of_unresponded_messages_sent_to_main_thread++;
     talk_mutex(unlock);
     wakeup_main_loop();
@@ -2071,6 +2076,26 @@ has_complete_peer_command(Peer *peer) {
     return peer->read.command_end ? true : false;
 }
 
+
+#define KITTY_STREAM_PREFIX "KITTY-STREAM "
+
+static bool
+has_stream_preamble(Peer *peer) {
+    // A client opens its data channel with one uncompressed line naming the
+    // attachment it got from the handshake. Remote control opens with
+    // KITTY_CMD_PREFIX, so one socket carries both and the first bytes say
+    // which this is. Nothing negotiable happens inside a compressed stream.
+    peer->read.command_end = 0;
+    const size_t prefix_sz = sizeof(KITTY_STREAM_PREFIX) - 1;
+    if (peer->read.used < prefix_sz || memcmp(peer->read.data, KITTY_STREAM_PREFIX, prefix_sz) != 0) return false;
+    for (size_t i = prefix_sz; i < peer->read.used; i++) {
+        if (peer->read.data[i] == '\n') {
+            peer->read.command_end = i + 1;
+            return true;
+        }
+    }
+    return false;
+}
 
 static void
 dispatch_peer_command(ChildMonitor *self, Peer *peer) {
@@ -2116,7 +2141,23 @@ read_from_peer(ChildMonitor *self, Peer *peer) {
         if (errno != EINTR) failed(strerror(errno));
     } else {
         peer->read.used += n;
-        while (has_complete_peer_command(peer)) dispatch_peer_command(self, peer);
+        if (peer->is_stream_peer) {
+            // Framing inside the stream is the reader's business, so hand over
+            // whatever arrived and start the buffer again.
+            queue_peer_message(self, peer);
+            peer->read.used = 0;
+        } else if (has_stream_preamble(peer)) {
+            peer->is_stream_peer = true;
+            dispatch_peer_command(self, peer);
+            // Anything sent in the same packet as the preamble is already
+            // stream data, and nothing else would deliver it until the client
+            // happened to send more.
+            if (peer->read.used) {
+                queue_peer_message(self, peer);
+                peer->read.used = 0;
+            }
+        } else
+            while (has_complete_peer_command(peer)) dispatch_peer_command(self, peer);
     }
 #undef failed
 }
@@ -2140,6 +2181,39 @@ write_to_peer(Peer *peer) {
         peer->write.used -= n;
     }
     talk_mutex(unlock);
+}
+
+static ssize_t
+push_to_peer(id_type peer_id, const char *msg, size_t msg_sz) {
+    // Send unsolicited data to a peer and report how much is still queued.
+    // Unlike send_response_to_peer this answers no request, so it leaves the
+    // unresponded message count alone. Called with no data it is a pure query,
+    // which is how a sender sees backpressure. Returns -1 for an unknown or
+    // failed peer.
+    ssize_t queued = -1;
+    bool wakeup = false;
+    talk_mutex(lock);
+    for (size_t i = 0; i < talk_data.num_peers; i++) {
+        Peer *peer = talk_data.peers + i;
+        if (peer->id != peer_id) continue;
+        if (peer->write.failed) break;
+        if (msg_sz && msg) {
+            if (peer->write.capacity - peer->write.used < msg_sz) {
+                void *data = realloc(peer->write.data, peer->write.capacity + msg_sz);
+                if (!data) fatal("Out of memory");
+                peer->write.data = data;
+                peer->write.capacity += msg_sz;
+            }
+            memcpy(peer->write.data + peer->write.used, msg, msg_sz);
+            peer->write.used += msg_sz;
+            wakeup = true;
+        }
+        queued = (ssize_t)peer->write.used;
+        break;
+    }
+    talk_mutex(unlock);
+    if (wakeup) wakeup_talk_loop(false);
+    return queued;
 }
 
 static void
@@ -2355,6 +2429,16 @@ cocoa_set_menubar_title(PyObject *self UNUSED, PyObject *args UNUSED) {
 }
 
 static PyObject *
+push_data_to_peer(PyObject *self UNUSED, PyObject *args) {
+#define push_data_to_peer_doc "push_data_to_peer(peer_id, data) -> bytes still queued for that peer, or -1 if it is gone. Empty data just asks."
+    const char *msg;
+    Py_ssize_t sz;
+    unsigned long long peer_id;
+    if (!PyArg_ParseTuple(args, "Ky#", &peer_id, &msg, &sz)) return NULL;
+    return PyLong_FromSsize_t(push_to_peer(peer_id, msg, (size_t)sz));
+}
+
+static PyObject *
 send_data_to_peer(PyObject *self UNUSED, PyObject *args) {
     char *msg;
     Py_ssize_t sz;
@@ -2371,6 +2455,7 @@ static PyMethodDef module_methods[] = {
     {"remove_timer", (PyCFunction)remove_python_timer, METH_VARARGS, ""},
     METHODB(monitor_pid, METH_VARARGS),
     METHODB(send_data_to_peer, METH_VARARGS),
+    METHODB(push_data_to_peer, METH_VARARGS),
     METHODB(cocoa_set_menubar_title, METH_VARARGS),
     METHODB(mask_kitty_signals_process_wide, METH_NOARGS),
     {"sigqueue", (PyCFunction)sig_queue, METH_VARARGS, ""},
