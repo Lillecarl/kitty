@@ -22,6 +22,23 @@ def visual_state(data):
     return struct.unpack_from('<B', data, 4 + 1 + 1 + 2 + 2 + 2 + 2)[0]
 
 
+def record_attrs(data):
+    """The attribute byte of every line record in a payload."""
+    flags, cols, lines = struct.unpack_from('<B', data, 5)[0], struct.unpack_from('<H', data, 6)[0], struct.unpack_from('<H', data, 8)[0]
+    records = struct.unpack_from('<I', data, 15)[0]
+    ans, off = [], HEADER_SIZE + (2 * lines if flags & HAS_PERMUTATION else 0)
+    for _ in range(records):
+        ans.append(struct.unpack_from('<B', data, off + 2)[0])
+        off += 2 + 1 + cols * CELL_SIZE
+        count = struct.unpack_from('<H', data, off)[0]
+        off += 2
+        for _ in range(count):
+            x, num = struct.unpack_from('<HB', data, off)
+            off += 3 + num * 4
+    assert off == len(data)
+    return ans
+
+
 def permutation(data):
     """The line permutation a payload carries, or None."""
     flags, lines = struct.unpack_from('<B', data, 5)[0], struct.unpack_from('<H', data, 8)[0]
@@ -188,6 +205,21 @@ class TestCellWire(BaseTest):
         self.ae(small, large)
         # And it is a small multiple of one line, not a screenful.
         self.assertLess(large, 4 * (20 * CELL_SIZE))
+
+    def test_bookkeeping_bits_stay_off_the_wire(self):
+        # has_dirty_text and text_was_cleared both say what the sender still
+        # owes a reader. They mean nothing on the other side, so they must not
+        # ride along in the attribute byte.
+        src = self.create_screen(cols=10, lines=4)
+        parse_bytes(src, b'aaa\r\nbbb\r\nccc\r\nddd')
+        for payload in (src.serialize_cells(True), None):
+            if payload is None:
+                parse_bytes(src, b'\x1b[H\x1b[L\x1b[2;1Hx')
+                payload = src.serialize_cells()
+            self.assertTrue(record_attrs(payload), 'no records to check')
+            for attrs in record_attrs(payload):
+                self.ae(attrs & 0x01, 0, 'has_dirty_text reached the wire')
+                self.ae(attrs & 0x10, 0, 'text_was_cleared reached the wire')
 
     def test_a_blanked_line_still_travels(self):
         # Blanking a line zeroes its attributes, which clears the dirty bit.

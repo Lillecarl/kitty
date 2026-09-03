@@ -147,7 +147,10 @@ serialize_line(Screen *screen, index_type y, const Line *line, CellWireBuf *buf,
     if (!cell_wire_buf_reserve(buf, 2u + 1u + columns * CELL_SIZE + 2u)) return false;
     write_u16(buf, (uint16_t)y);
     LineAttrs attrs = line->attrs;
-    attrs.has_dirty_text = false; // dirtiness is server bookkeeping
+    // Both of these say what the sender still owes a reader. That is the
+    // sender's own bookkeeping, and it means nothing on the other side.
+    attrs.has_dirty_text = false;
+    attrs.text_was_cleared = false;
     write_u8(buf, attrs.val);
     size_t side_table_count = 0;
     const size_t side_count_pos = buf->used + columns * CELL_SIZE;
