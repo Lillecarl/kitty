@@ -411,6 +411,19 @@ covers is the protocol under it: the wire format, the stream, the attach
 handshake, and a server driven by a client that decodes frames but does not
 draw (`kitty_tests/server_mode.py`).
 
+The drawing itself was confirmed with pixels, not only with state. `weston
+--debug` authorizes `weston-screenshooter`, and a capture of the client shows
+the text the server printed, in antialiased glyphs, under llvmpipe. Without
+that check every assertion here reads the Screen, which a blank window would
+also pass.
+
+One path has no automated cover: the branch in `on_key_input` that forwards a
+key. It fires only for a real GLFW key event, and weston's headless backend
+does not carry the virtual keyboard protocol, so nothing in this harness can
+produce one. `kitty @ send-key` reaches `Boss.send_key_to_server` through
+Python and covers what the two share; what is untested is the branch itself.
+A physical keyboard is the first thing to try on a real display.
+
 What this took was small, which is the interesting part. `apply_serialized_cells`
 already marks the screen dirty, so the normal render pass draws a wire-fed
 Screen with no render change at all. The work was in the three places that
