@@ -578,6 +578,12 @@ destroy_os_window_item(OSWindow *w) {
         remove_tab_inner(w, tab->id);
     }
     Py_CLEAR(w->window_title);
+    // In server mode fonts_data is a per-window allocation rather than a
+    // shared FontGroup, so this window owns it.
+    if (global_state.is_server && w->fonts_data) {
+        free((void *)w->fonts_data);
+        w->fonts_data = NULL;
+    }
     Py_CLEAR(w->tab_bar_render_data.screen);
     free_vao(w->tab_bar_render_data.vao_idx);
     free(w->tabs);

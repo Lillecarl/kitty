@@ -2345,17 +2345,49 @@ initialize_font_group(FontGroup *fg) {
 
 void
 send_prerendered_sprites_for_window(OSWindow *w) {
+    // A headless fonts data has no sprite map and needs none: nothing renders,
+    // and the client rasterizes from its own fonts.
+    if (global_state.is_server) return;
     FontGroup *fg = (FontGroup *)w->fonts_data;
     if (!fg->sprite_map) {
         fg->sprite_map = alloc_sprite_map();
-        // Nothing renders in server mode, so skip rasterizing and uploading
-        // the box-drawing and decoration sprites.
-        if (!global_state.is_server) send_prerendered_sprites(fg);
+        send_prerendered_sprites(fg);
     }
+}
+
+// Default cell size before a client has told us its own. The grid is wrong
+// until then, which is harmless: attaching resizes it.
+#define SERVER_DEFAULT_CELL_WIDTH 10u
+#define SERVER_DEFAULT_CELL_HEIGHT 20u
+#define SERVER_DEFAULT_DPI 96.0
+
+// A server has no fonts. Every non-render consumer of FONTS_DATA_HANDLE reads
+// only the fields in FONTS_DATA_HEAD, and FontGroup merely prefixes that head,
+// so a bare head allocation serves them without opening a single font file.
+//
+// Each OS window gets its own, rather than an interned FontGroup, because the
+// attach handshake writes the client's cell metrics into fcm. Sharing one
+// between windows would make a handshake on one window silently move another.
+// destroy_os_window_item() frees it.
+FONTS_DATA_HANDLE
+alloc_headless_fonts_data(double font_sz_in_pts, double dpi_x, double dpi_y) {
+    FONTS_DATA_HANDLE ans = calloc(1, sizeof(*ans));
+    if (!ans) fatal("Out of memory allocating headless fonts data");
+    ans->sprite_map = NULL;
+    ans->font_sz_in_pts = font_sz_in_pts > 0 ? font_sz_in_pts : 11.0;
+    ans->logical_dpi_x = dpi_x > 0 ? dpi_x : SERVER_DEFAULT_DPI;
+    ans->logical_dpi_y = dpi_y > 0 ? dpi_y : SERVER_DEFAULT_DPI;
+    ans->fcm.cell_width = SERVER_DEFAULT_CELL_WIDTH;
+    ans->fcm.cell_height = SERVER_DEFAULT_CELL_HEIGHT;
+    // baseline, underline and strikethrough are render-only and stay zero.
+    return ans;
 }
 
 FONTS_DATA_HANDLE
 load_fonts_data(double font_sz_in_pts, double dpi_x, double dpi_y) {
+    // Gate here rather than at the call sites, so that no path reaches
+    // fontconfig, FreeType or HarfBuzz when running headless.
+    if (global_state.is_server) return alloc_headless_fonts_data(font_sz_in_pts, dpi_x, dpi_y);
     FontGroup *fg = font_group_for(font_sz_in_pts, dpi_x, dpi_y);
     return (FONTS_DATA_HANDLE)fg;
 }

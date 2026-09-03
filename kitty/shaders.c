@@ -112,20 +112,6 @@ clear_current_framebuffer(void) {
 SPRITE_MAP_HANDLE
 alloc_sprite_map(void) {
     if (!max_texture_size) {
-        if (global_state.is_server) {
-            // No GL to ask, and nothing ever uploads sprites here. Use the
-            // minimum a GL 3.1 implementation must support, so that the sprite
-            // index arithmetic stays in range.
-            max_texture_size = 1024;
-            max_array_texture_layers = 256;
-            sprite_tracker_set_limits(max_texture_size, max_array_texture_layers);
-            SpriteMap *sans = calloc(1, sizeof(SpriteMap));
-            if (!sans) fatal("Out of memory allocating a sprite map");
-            *sans = NEW_SPRITE_MAP;
-            sans->max_texture_size = max_texture_size;
-            sans->max_array_texture_layers = max_array_texture_layers;
-            return (SPRITE_MAP_HANDLE)sans;
-        }
         glGetIntegerv(GL_MAX_TEXTURE_SIZE, &(max_texture_size));
         glGetIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS, &(max_array_texture_layers));
 #ifdef __APPLE__

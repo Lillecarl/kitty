@@ -727,6 +727,7 @@ void blank_canvas(float, color_type, bool);
 void blank_os_window(OSWindow *);
 void set_os_window_chrome(OSWindow *w);
 FONTS_DATA_HANDLE load_fonts_data(double, double, double);
+FONTS_DATA_HANDLE alloc_headless_fonts_data(double font_sz_in_pts, double dpi_x, double dpi_y);
 void send_prerendered_sprites_for_window(OSWindow *w);
 #ifdef __APPLE__
 #include "cocoa_window.h"

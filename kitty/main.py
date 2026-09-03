@@ -381,7 +381,11 @@ class AppRunner:
             theme_colors.patch_opts(opts, args.debug_rendering)
         set_options(opts, is_wayland(), args.debug_rendering, args.debug_font_fallback, is_server_mode())
         try:
-            set_font_family(opts, add_builtin_nerd_font=True)
+            # A server never shapes or rasterizes text, so it does not open a
+            # single font file. The attached client does that with its own
+            # fonts. Cell metrics arrive from the client at attach time.
+            if not is_server_mode():
+                set_font_family(opts, add_builtin_nerd_font=True)
             _run_app(opts, args, bad_lines, talk_fd)
         finally:
             set_options(None)
