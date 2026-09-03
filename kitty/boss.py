@@ -93,6 +93,7 @@ from .fast_data_types import (
     current_focused_os_window_id,
     current_os_window,
     destroy_global_data,
+    encode_key_for_tty,
     focus_os_window,
     get_boss,
     get_options,
@@ -1138,9 +1139,59 @@ class Boss:
         return None
 
     def data_channel_client_message(self, message: bytes) -> None:
-        # Nothing flows from the client yet. Input and viewport changes land
-        # here once a client exists.
-        pass
+        """Route one message from the attached client.
+
+        A client sends JSON events only. An event this server does not know is
+        dropped, which is what lets a newer client talk to an older server
+        without a version bump.
+        """
+        from .attach import MSG_EVENT
+
+        if not message or message[0] != MSG_EVENT:
+            log_error('Ignoring a data channel message of an unknown type from the attached client')
+            return
+        try:
+            event = json.loads(message[1:])
+        except Exception:
+            log_error('Ignoring an unparseable event from the attached client')
+            return
+        if not isinstance(event, dict):
+            return
+        # The window can close while an event is in flight. Say nothing.
+        window = self.window_id_map.get(event.get('window', 0))
+        if window is None:
+            return
+        name = event.get('event')
+        if name == 'text':
+            text = event.get('text')
+            if isinstance(text, str):
+                window.write_to_child(text)
+        elif name == 'key':
+            self.send_client_key_to_window(window, event)
+
+    def send_client_key_to_window(self, window: Window, event: dict[str, Any]) -> None:
+        """Encode a client's key event for this window's terminal.
+
+        The client cannot do this itself: the keyboard protocol flags and the
+        cursor key mode live on the Screen, here. A release, or a key the
+        terminal has nothing to say about, encodes to nothing and writes
+        nothing.
+        """
+        try:
+            data = encode_key_for_tty(
+                key=int(event.get('key', 0)),
+                shifted_key=int(event.get('shifted_key', 0)),
+                alternate_key=int(event.get('alternate_key', 0)),
+                mods=int(event.get('mods', 0)),
+                action=int(event.get('action', GLFW_PRESS)),
+                text=event.get('text') or None,
+                key_encoding_flags=window.screen.current_key_encoding_flags(),
+                cursor_key_mode=window.screen.cursor_key_mode,
+            )
+        except (TypeError, ValueError) as err:
+            log_error(f'Ignoring a malformed key event from the attached client: {err}')
+            return
+        window.write_to_child(data)
 
     def data_channel_closed(self, peer_id: int) -> None:
         from .attach import attachments

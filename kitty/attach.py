@@ -211,6 +211,22 @@ def event_message(event: Any) -> bytes:
     return bytes((MSG_EVENT,)) + json.dumps(event).encode('utf-8')
 
 
+def key_event(window: int, key: int, **fields: Any) -> bytes:
+    """A key the client did not handle itself.
+
+    The client cannot encode a key for the terminal, because the keyboard
+    protocol flags live on the server side Screen. So it reports the event and
+    the server encodes it. The numbers are kitty's own key, modifier and action
+    values, which the protocol version covers.
+    """
+    return event_message({'event': 'key', 'window': window, 'key': key, **fields})
+
+
+def text_event(window: int, text: str) -> bytes:
+    """Text that goes to the terminal as it is, such as a paste or an IME commit."""
+    return event_message({'event': 'text', 'window': window, 'text': text})
+
+
 def parse_preamble(data: bytes) -> int:
     """Read the attachment id out of a data channel preamble."""
     if not data.startswith(CHANNEL_PREAMBLE):

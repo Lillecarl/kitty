@@ -16,9 +16,9 @@ import subprocess
 import tempfile
 import time
 
-from kitty.attach import CHANNEL_PREAMBLE, MSG_CELLS, MSG_EVENT
+from kitty.attach import CHANNEL_PREAMBLE, MSG_CELLS, MSG_EVENT, key_event, text_event
 from kitty.constants import kitty_exe
-from kitty.fast_data_types import CellStreamReader, Screen
+from kitty.fast_data_types import GLFW_FKEY_ENTER, CellStreamReader, CellStreamWriter, Screen
 
 from .base import BaseTest, Callbacks
 
@@ -35,6 +35,7 @@ class FakeClient:
     def __init__(self, sock_path):
         self.sock_path = sock_path
         self.reader = CellStreamReader()
+        self.writer = CellStreamWriter()
         self.screens = {}
         self.events = []
         self.geometry = {}
@@ -83,6 +84,9 @@ class FakeClient:
         line, rest = buf.split(b'\n', 1)
         self.pending = rest
         return line
+
+    def send(self, message):
+        self.sock.sendall(bytes(self.writer.write(message)))
 
     def screen_for(self, window_id):
         screen = self.screens.get(window_id)
@@ -192,6 +196,17 @@ class TestServerMode(BaseTest):
         client.rc('launch', '--type', 'os-window')
         self.assertTrue(client.wait_for(lambda: len(client.screens) > 1), 'The second OS Window never arrived')
         self.assertTrue(any(e.get('event') == 'os_windows' for e in client.events), 'No OS Window event arrived')
+
+        # The client types, and the shell it never runs answers. Text goes
+        # through as it is; the Enter key does not, because only the server
+        # knows how this terminal wants a key encoded.
+        # The marker only appears once the shell runs the command, never in the
+        # echo of it, so this fails if Enter does not arrive.
+        typed = 'TYPED-BY-THE-CLIENT'
+        window_id = min(client.screens)
+        client.send(text_event(window_id, "printf 'TYPED%sCLIENT' -BY-THE-"))
+        client.send(key_event(window_id, GLFW_FKEY_ENTER))
+        self.assertTrue(client.wait_for(lambda: typed in client.text()), f'The typing never reached the shell:\n{client.text()}')
 
         # Another client takes the session. This one is told why, rather than
         # just losing its socket.
