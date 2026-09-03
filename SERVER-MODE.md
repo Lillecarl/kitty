@@ -395,6 +395,54 @@ This also sets up client-side scrollback. The permutation says which line left
 the top of the screen, so a client can push its own copy into its history
 buffer rather than being sent one.
 
+**The client renders, and the loop is closed.** `kitty --attach unix:...` is an
+ordinary kitty in every way but two: it spawns nothing, so its windows have no
+child, and its cells arrive from a socket rather than from a parser. Everything
+else is its own — the fonts, the GPU, the keybindings, the colors. That is the
+config split of §5.2 falling out of the architecture rather than being built.
+
+The demo of §6 step 3 now runs: `./server-mode-demo.sh`. A server holds a shell
+with no display at all. A client shows it, is typed into, and resizes it.
+`kitty/client.py` is the whole of the client side.
+
+That script is how the client is checked, and it is not part of `./test.py`.
+The suite runs without a compositor, and the client needs one. What the suite
+covers is the protocol under it: the wire format, the stream, the attach
+handshake, and a server driven by a client that decodes frames but does not
+draw (`kitty_tests/server_mode.py`).
+
+What this took was small, which is the interesting part. `apply_serialized_cells`
+already marks the screen dirty, so the normal render pass draws a wire-fed
+Screen with no render change at all. The work was in the three places that
+assume a window owns a process.
+
+**A stub child.** `Window` reaches into `child` for a title, a cwd, an
+environment and a process list. A client window answers all of it empty rather
+than wrong, because a caller that wants the real thing has to ask the server. It
+is registered with the boss but not with the child monitor, since there is no
+fd to poll.
+
+**The key path is in C, and that is where the client hook belongs.** An
+unmatched key is encoded and written by `on_key_input`, and a client cannot
+encode: the keyboard protocol flags and the cursor key mode live on the
+server's Screen (§5.4). So the hook forwards the raw event, straight after the
+shortcut match. That match is §5.4's client-side keybinding resolution, already
+done by the time the hook runs, which is why the design fell out cleanly.
+
+**A timer reads the socket**, as on the server, because nothing else wakes this
+kitty: it has no children and the socket is not in the event loop. The same
+timer notices a resize, since a resize that changes nothing sends nothing.
+
+Testing this needed a display on a machine that has none. Weston's headless
+backend with software OpenGL is the answer, and it is what the demo script sets
+up. An X server will not do: Xvfb has no usable GLX visuals.
+
+Not yet on the client: scrollback is empty, because the permutation rearranges
+the visible region and nothing appends to the client's history buffer yet. All
+of a server's windows land in one tab, since per window layout is not in the
+`os_windows` event. IME committed text goes through `schedule_write_to_child` in
+C and does not reach the text event.
+
 Not yet: the modes that are neither per frame nor layout. Mouse tracking waits
 for the mouse work, and runtime `OSC 4/10/11` is still §7 question 1.
 
@@ -990,13 +1038,13 @@ the hello succeeds.
    geometry for a window nobody displays, and layouts respond to a simulated
    resize.
 
-3. **Cell protocol, visible region only.** *(done, both directions)*
+3. **Cell protocol, visible region only.** *(done, both directions, with a
+   rendering client)*
    Serializer walking the linebuf and emitting dirty lines as (text, style);
    the reader rebuilds `Line`s and runs `render_line` locally. The view
-   traversal is deliberately not mirrored — see the progress notes. Still to
-   come: a renderer on the far end.
-   **Demo:** attach from a laptop, see the remote shell, type, detach,
-   reattach, state intact.
+   traversal is deliberately not mirrored — see the progress notes.
+   **Demo:** `./server-mode-demo.sh`. Detach and reattach is the part still to
+   come.
 
 4. **Client-side scrollback.** *(the scroll cost is done; the history is not)*
    Compressed raw-array bulk transfer plus the codepoint side table for
