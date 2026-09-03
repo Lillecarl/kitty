@@ -69,9 +69,38 @@ it client-supplied pixels — matches what kitty already does. Only two more GL
 sites needed gating: the framebuffer size callback sets the GPU viewport, and
 the live resize path sets the swap interval.
 
-What remains of spike 2 is the other half: `cell_px` currently comes from
-server-side fonts rather than from the client, and there is no attach protocol
-to carry either number yet.
+**Spike 2 is now complete, and the server opens no font files at all.**
+
+`FONTS_DATA_HANDLE` made that cheap. It is a prefix struct: `FontGroup` starts
+with `FONTS_DATA_HEAD` and appends the faces, and every consumer outside the
+render path reads only the head, meaning cell metrics, logical DPI and the
+nominal font size. So a bare head allocation serves them with no font behind it.
+Gating `load_fonts_data` itself, rather than its four callers, means no path can
+reach fontconfig, FreeType or HarfBuzz. Each OS window gets its own allocation
+instead of an interned `FontGroup`, because the handshake writes the client's
+metrics into `fcm`, and sharing one would make a handshake on one window
+silently move another.
+
+`kitty @ set-client-viewport` carries the handshake: cell size, viewport and
+DPI. Verified headless, with the shell's own `stty size` agreeing each time —
+8x16 cells in 1200x800 gives 150x50, 20x40 gives 60x20, 8x16 in 1920x1080 gives
+240x67. Measured: no font file mapped, fontconfig reads no cache, RSS ~42 MB.
+The fontconfig, FreeType and HarfBuzz libraries stay mapped because they are
+link-time dependencies of the extension module; nothing calls into them.
+
+Two traps worth recording:
+
+- **A font size change must not clobber the client's metrics**, and must not
+  replace the per-window allocation, which would leak it. Server mode records
+  the nominal size and keeps both.
+- **The relayout after a handshake has to be unconditional.** Setting a viewport
+  equal to the current one produces no resize event, because
+  `update_os_window_viewport` early-returns on "no change", so a cell size
+  change under it would never reach the layout.
+
+Still open before a real client: font size is a client property, so
+`set-client-viewport` is the mechanism but there is no attach protocol carrying
+it yet, and no cell data flows in the other direction.
 
 Known gap: the server still loads fonts, because `create_os_window` derives
 window geometry from cell metrics. Spike 2 replaces that with client-supplied
@@ -538,7 +567,7 @@ handshake with a declared compatibility window, not a bare equality check.
    `kitty @ ls` / `kitty @ get-text` show a live correctly-parsed screen with no
    window anywhere. Useful on its own, and proves the parse path is display-free.
 
-2. **Virtual OS window.** *(geometry done; cell metrics still server-side)* The client-viewport abstraction; route layout through
+2. **Virtual OS window.** *(done)* The client-viewport abstraction; route layout through
    client-supplied `(viewport_px, cell_px)`. **Demo:** `kitty @ ls` reports sane
    geometry for a window nobody displays, and layouts respond to a simulated
    resize.
