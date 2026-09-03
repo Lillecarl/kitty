@@ -121,7 +121,8 @@ a peer exists, so it gets settled and tested alone. `kitty_tests/cell_wire.py`
 writes into one `Screen`, applies the payload to a second, and compares them
 cell by cell.
 
-The format is 19 bytes of header, then one record per line: the line
+The format is 19 bytes of header, an optional line permutation, then one
+record per changed line: the line
 attributes, a flat array of 24-byte cells, and a side table. A cell is six
 little-endian `uint32`s — the codepoint, the packed `CPUCell` flags, and
 `fg`/`bg`/`decoration_fg`/`attrs` from the `GPUCell`. Nothing is blitted,
@@ -179,9 +180,10 @@ The flag lives on `LineBuf`, not on `Screen`, which matters: `screen.c` swaps
 attached to the buffer cannot be lost that way, and it catches every path that
 moves lines by construction, rather than by an audit that has to stay right.
 
-The real fix belongs to spike 4: a scroll record, so the client rotates its own
-linebuf. It converges with history streaming, because a line that scrolls off
-*is* a history append. Note that `cell_wire_serialize` resets
+The real fix is the line permutation, which arrived later in this spike and is
+written up below. The client rotates its own linebuf instead of taking the
+lines again. It converges with history streaming, because a line that scrolls
+off *is* a history append. Note that `cell_wire_serialize` resets
 `history_line_added_count`, which counts exactly the lines spike 4 has to ship.
 That delta must emit them before the reset.
 
@@ -201,9 +203,8 @@ Measured at level 1 on a 200x50 screen, where a raw payload is 240 KB:
 | one line of scrolling output | 8.0 KB |
 
 The first three are comfortable. Attach costs single-digit KB per window, and
-typing costs nothing. The fourth is the price of the full resend above: at
-60 fps, scrolling output is ~480 KB/s on the wire. Survivable on a LAN, wrong
-over a slow link, and the number that justifies the spike 4 scroll record.
+typing costs nothing. The fourth was the price of the full resend above, and
+the number that justified the scroll work below.
 
 One rule for the sender, tighter than §2 says. Serialization *consumes*
 dirtiness: it marks the lines it sends clean and clears `content_moved`. So a
@@ -329,6 +330,70 @@ vim, produced a frame with no lines and a header that had changed. The pump now
 keeps the header state it last sent per window and drops a frame only when both
 the lines and the header repeat. The flags byte and the record count are not
 part of that state, because they describe the payload and not the screen.
+
+**Scrolling stopped costing a screenful, and compression was never going to fix
+it.** A scroll resent every line, every frame, because the lines had not become
+dirty — only their order had changed — and the wire had no way to say so. The
+stream compressor hid the size but not the work.
+
+The first question was whether compression could carry it alone. It cannot, and
+the reason is a fixed number. zlib's window is 32 KB, which is its maximum, and
+one frame of cells is 46 KB at 80x24 and 240 KB at 200x50. The previous frame's
+copy of a scrolled line is therefore out of the window's reach, and the
+compressor cannot see that this frame is the last one shifted by a line. Here
+is the ratio of a scrolled delta to a full snapshot, before the fix:
+
+| grid | one frame, packed | scrolled delta / snapshot |
+|---|---|---|
+| 40x8 | 7.7 KB | 0.92 |
+| 80x24 | 46 KB | 0.99 |
+| 200x50 | 240 KB | 1.00 |
+
+Only the toy 40x8 grid fits two frames in the window, and even it gains 8%. At
+any real size a scrolled frame costs exactly a full snapshot. zstd's longer
+window could reach across frames, and the negotiated compression list leaves
+room to add it, but it would still pack, compress, ship and unpack a screenful
+each frame.
+
+So the move itself goes on the wire: a `lines * uint16` permutation, where
+entry y names the y that line came from. Two bytes a line. The reader repeats
+the move on its own buffer, then takes only the lines that really changed.
+
+The sender recovers the move by keeping the line map it last sent and comparing
+it with the current one. `line_map[y]` is a slot index into the cell storage,
+and the four rotation functions only ever move those indices around, so the
+comparison catches an index, a reverse index, an insert lines, a delete lines,
+or any mix of them in one frame. No operation log, nothing to overflow, and no
+coupling to the call sites in `screen.c`. Several scrolls in one tick collapse
+into one vector for free.
+
+Measured on 200x50 with varied text, one scrolled line:
+
+| | packed | on the wire | serialize + deflate |
+|---|---|---|---|
+| before | 240 KB | 16.5 KB | 1.50 ms |
+| after | 9.7 KB | 413 B | 0.06 ms |
+
+40x less bandwidth and 25x less CPU, and the CPU matters as much: the old path
+spent 1.5 ms of a 16.7 ms frame budget packing a screen that had not changed,
+and the client spent the same again unpacking it.
+
+Two things this needed. `content_moved` now means only what its name says, that
+the buffer stopped being a rearrangement of itself, which is true when the
+alternate screen swaps in and false when the screen scrolls. And a line that is
+blanked in place gets a bit of its own in `LineAttrs`, because blanking zeroes
+the attributes and so clears the dirty bit. The render pass never noticed,
+since it uploads by position. A sender that ships only what changed would have
+left the reader with the text that scrolled in.
+
+The test that matters here is differential rather than targeted: 400 random
+operations — text, scrolls, `IL`/`DL`, margins, erases, alternate screen
+toggles — serializing a delta after every one and comparing the two screens
+cell by cell. Enumerating the mutation paths by hand is how one gets missed.
+
+This also sets up client-side scrollback. The permutation says which line left
+the top of the screen, so a client can push its own copy into its history
+buffer rather than being sent one.
 
 Not yet: the modes that are neither per frame nor layout. Mouse tracking waits
 for the mouse work, and runtime `OSC 4/10/11` is still §7 question 1.
@@ -559,9 +624,10 @@ cursor/selection/scroll-offset, which are bytes.
 
 Nothing resends the world every frame.
 
-Correction from the implementation: this holds for editing in place, not for
-scrolling. Until a scroll record exists, a frame that scrolls sends every
-line, because line attributes move with their lines. See the spike 3 notes.
+Correction from the implementation: this needed one addition to hold for
+scrolling as well as for editing in place. Line attributes move with their
+lines, so a scrolled line is not dirty at its new position. The permutation on
+the wire says where it went. See the spike 3 notes.
 
 ### One long-lived zlib stream, not per-message compression
 
@@ -932,10 +998,12 @@ the hello succeeds.
    **Demo:** attach from a laptop, see the remote shell, type, detach,
    reattach, state intact.
 
-4. **Client-side scrollback.** Compressed raw-array bulk transfer plus the
-   codepoint side table for `ch_is_idx` cells (§2); background history
-   streaming, lazy per-window fetch, invalidate-and-restream on rewrap.
-   **Demo:** instant local scrolling over a deliberately laggy link.
+4. **Client-side scrollback.** *(the scroll cost is done; the history is not)*
+   Compressed raw-array bulk transfer plus the codepoint side table for
+   `ch_is_idx` cells (§2); background history streaming, lazy per-window fetch,
+   invalidate-and-restream on rewrap. The permutation already tells the client
+   which line left the top, so it can append its own copy rather than be sent
+   one. **Demo:** instant local scrolling over a deliberately laggy link.
 
 5. **Service RPCs.** Clipboard, bell, notifications, title, dynamic colors, URL
    open.
