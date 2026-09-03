@@ -24,15 +24,27 @@
 // sprite_idx is not sent either. The reader derives it when it shapes.
 
 #define CELL_WIRE_MAGIC 0x4c45434bu // "KCEL" little-endian
-#define CELL_WIRE_VERSION 1u
-// magic, version, flags, columns, lines, cursor x, cursor y, record count.
-// A payload of exactly this size carries no lines, so nothing changed.
-#define CELL_WIRE_HEADER_SIZE (4u + 1u + 1u + 2u + 2u + 2u + 2u + 4u)
+#define CELL_WIRE_VERSION 2u
+// magic, version, flags, columns, lines, cursor x, cursor y, visual state,
+// record count. A payload of exactly this size carries no lines, so nothing
+// changed.
+#define CELL_WIRE_HEADER_SIZE (4u + 1u + 1u + 2u + 2u + 2u + 2u + 1u + 4u)
 
 // Header flags. CELL_WIRE_SNAPSHOT says the payload holds every line. A caller
 // that asks for a delta still gets one when lines have moved without becoming
 // dirty.
 #define CELL_WIRE_SNAPSHOT 1u
+
+// The visual state byte. These belong in the header and not in an out of band
+// event, because they change as often as the cells do: a curses application
+// hides the cursor, redraws and shows it again on every frame. Sending them
+// beside the frame would draw a cursor at a stale position.
+#define CELL_WIRE_CURSOR_VISIBLE 0x01u
+#define CELL_WIRE_CURSOR_NON_BLINKING 0x02u
+#define CELL_WIRE_REVERSE_VIDEO 0x04u
+// Three bits of cursor shape, which is enough for NUM_OF_CURSOR_SHAPES.
+#define CELL_WIRE_CURSOR_SHAPE_SHIFT 3u
+#define CELL_WIRE_CURSOR_SHAPE_MASK 0x07u
 
 typedef struct CellWireBuf {
     uint8_t *data;

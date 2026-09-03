@@ -194,6 +194,15 @@ cell_wire_serialize(Screen *screen, bool snapshot, CellWireBuf *buf) {
     write_u16(buf, (uint16_t)screen->lines);
     write_u16(buf, (uint16_t)screen->cursor->x);
     write_u16(buf, (uint16_t)screen->cursor->y);
+    // screen_is_cursor_visible and screen_invert_colors, not the raw modes:
+    // both resolve a paused rendering (synchronized update) to what the render
+    // pass would actually show.
+    uint8_t visual = 0;
+    if (screen_is_cursor_visible(screen)) visual |= CELL_WIRE_CURSOR_VISIBLE;
+    if (screen->cursor->non_blinking) visual |= CELL_WIRE_CURSOR_NON_BLINKING;
+    if (screen_invert_colors(screen)) visual |= CELL_WIRE_REVERSE_VIDEO;
+    visual |= (uint8_t)((screen->cursor->shape & CELL_WIRE_CURSOR_SHAPE_MASK) << CELL_WIRE_CURSOR_SHAPE_SHIFT);
+    write_u8(buf, visual);
     const size_t record_count_pos = buf->used;
     write_u32(buf, 0); // patched below
     RAII_ListOfChars(lc);
@@ -239,6 +248,7 @@ cell_wire_apply(Screen *screen, const uint8_t *data, size_t sz) {
         return false;
     }
     const uint16_t cursor_x = read_u16(&r), cursor_y = read_u16(&r);
+    const uint8_t visual = read_u8(&r);
     const uint32_t records = read_u32(&r);
     RAII_ListOfChars(lc);
     Line line = {.text_cache = screen->text_cache};
@@ -293,6 +303,13 @@ cell_wire_apply(Screen *screen, const uint8_t *data, size_t sz) {
     // holds after a line fills and before the next character wraps it.
     screen->cursor->x = MIN(cursor_x, screen->columns);
     screen->cursor->y = MIN(cursor_y, screen->lines - 1);
+    // The mirror has no parser to set these, so the payload sets them. A shape
+    // this build does not know becomes the default one.
+    screen->modes.mDECTCEM = (visual & CELL_WIRE_CURSOR_VISIBLE) != 0;
+    screen->cursor->non_blinking = (visual & CELL_WIRE_CURSOR_NON_BLINKING) != 0;
+    screen->modes.mDECSCNM = (visual & CELL_WIRE_REVERSE_VIDEO) != 0;
+    const uint8_t shape = (visual >> CELL_WIRE_CURSOR_SHAPE_SHIFT) & CELL_WIRE_CURSOR_SHAPE_MASK;
+    screen->cursor->shape = shape < NUM_OF_CURSOR_SHAPES ? (CursorShape)shape : NO_CURSOR_SHAPE;
     screen->is_dirty = true;
     return true;
 }

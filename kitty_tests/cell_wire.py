@@ -9,14 +9,19 @@ from .base import BaseTest, parse_bytes
 
 # Layout constants from kitty/cell-wire.c. An update with no records is exactly
 # a header.
-HEADER_SIZE = 18
+HEADER_SIZE = 19
 CELL_SIZE = 24
+
+
+def visual_state(data):
+    """The visual state byte out of a payload header."""
+    return struct.unpack_from('<B', data, 4 + 1 + 1 + 2 + 2 + 2 + 2)[0]
 
 
 def side_table_entries(data):
     """Walk a payload and return its (y, x, codepoints) side table entries."""
-    magic, version, flags, columns, lines, cx, cy, records = struct.unpack_from('<IBBHHHHI', data)
-    assert magic == 0x4C45434B and version == 1
+    magic, version, flags, columns, lines, cx, cy, visual, records = struct.unpack_from('<IBBHHHHBI', data)
+    assert magic == 0x4C45434B and version == 2
     ans, off = [], HEADER_SIZE
     for _ in range(records):
         y = struct.unpack_from('<H', data, off)[0]
@@ -105,6 +110,34 @@ class TestCellWire(BaseTest):
 
         # The serializer marks the lines it sent clean, so a repeat is empty.
         self.ae(len(src.serialize_cells()), HEADER_SIZE)
+
+    def test_visual_state_travels_with_the_frame(self):
+        # A curses application hides the cursor, redraws, then shows it again.
+        # So cursor visibility is per frame state, like the cursor position,
+        # and it travels in the header rather than beside it.
+        src = self.create_screen(cols=20, lines=6)
+        dest = self.create_screen(cols=20, lines=6)
+        self.assertTrue(src.cursor_visible)
+
+        # Hide the cursor, make it a blinking beam, invert the screen.
+        parse_bytes(src, b'\x1b[?25l\x1b[5 q\x1b[?5h')
+        payload = src.serialize_cells(True)
+        dest.apply_serialized_cells(payload)
+        self.assertFalse(dest.cursor_visible)
+        self.ae(dest.cursor.shape, src.cursor.shape)
+        self.ae(dest.cursor.blink, src.cursor.blink)
+        # Reverse video has no Python getter, so compare the whole byte. That
+        # covers every bit in it, in both directions.
+        self.ae(visual_state(dest.serialize_cells(True)), visual_state(payload))
+
+        # And back again, on a delta rather than a snapshot.
+        parse_bytes(src, b'\x1b[?25h\x1b[2 q\x1b[?5l')
+        payload = src.serialize_cells()
+        dest.apply_serialized_cells(payload)
+        self.assertTrue(dest.cursor_visible)
+        self.ae(dest.cursor.shape, src.cursor.shape)
+        self.ae(dest.cursor.blink, src.cursor.blink)
+        self.ae(visual_state(dest.serialize_cells(True)), visual_state(payload))
 
     def test_scrolling_content_reaches_the_client(self):
         # Lines that scroll up keep their attributes, so they arrive clean at
