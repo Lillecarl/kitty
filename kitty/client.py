@@ -155,6 +155,8 @@ class Client:
         # Server window id to the window showing it.
         self.windows: dict[int, int] = {}
         self.timer_id = 0
+        self.viewport: dict[str, int] = {}
+        self.os_window_id = 0
 
     # Connecting {{{
 
@@ -335,6 +337,31 @@ class Client:
             log_error(f'Another client took this session: {event.get("client")}')
             self.close()
 
+    def send_viewport(self, os_window_id: int) -> None:
+        """Tell the server the grid this client can now draw.
+
+        The client owns its window, so a resize here is authoritative. The
+        server relayouts for it and the next frames arrive in the new shape.
+        """
+        metrics = self.client_metrics(os_window_id)
+        if not metrics['width'] or not metrics['height']:
+            return
+        if metrics == self.viewport:
+            return
+        self.viewport = metrics
+        try:
+            sock = self.connect_socket()
+        except OSError as err:
+            log_error(f'Could not tell the kitty server about a resize: {err}')
+            return
+        try:
+            sock.sendall(rc_command('set-client-viewport', {'match': 'all', 'self': False, **metrics}))
+            read_rc_response(sock)
+        except Exception as err:
+            log_error(f'The kitty server refused the new viewport: {err}')
+        finally:
+            sock.close()
+
     def send(self, message: bytes) -> None:
         """One event, up the same channel the frames come down."""
         if self.channel is None:
@@ -346,6 +373,10 @@ class Client:
             self.close()
 
     def pump(self, timer_id: int | None = None) -> None:
+        # A resize of this window is the client's to declare, so look before
+        # reading. send_viewport does nothing when nothing changed.
+        if self.os_window_id:
+            self.send_viewport(self.os_window_id)
         for message in self.read():
             self.apply(message)
 

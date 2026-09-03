@@ -1172,6 +1172,8 @@ class Boss:
         except Exception as err:
             raise SystemExit(f'Could not attach to {self.args.attach}: {err}')
         self.client = client
+        client.os_window_id = os_window_id
+        client.viewport = client.client_metrics(os_window_id)
         log_error(f'Attached to a kitty server speaking protocol {hello.get("protocol_version")}, cell wire {hello.get("cell_wire_version")}')
         client.note_titles(hello.get('os_windows'))
         # Nothing else wakes this kitty: it has no children and the socket is
