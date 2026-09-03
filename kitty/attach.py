@@ -168,8 +168,14 @@ def os_window_geometry(boss: 'Boss', os_window_id: int) -> dict[str, Any]:
 
     metrics = get_os_window_size(os_window_id) or {}
     tm = boss.os_window_map.get(os_window_id)
+    tab = tm.active_tab if tm is not None else None
     return {
         'id': os_window_id,
+        # How the server arranges its windows. A client must arrange them the
+        # same way, or it draws a screen of one size into a rectangle of
+        # another. This belongs to the session, not to the display, because it
+        # survives a detach.
+        'layout': tab.current_layout.name if tab is not None else '',
         'width': metrics.get('width', 0),
         'height': metrics.get('height', 0),
         'cell_width': metrics.get('cell_width', 0),
@@ -199,6 +205,7 @@ MSG_EVENT = 2
 # LENGTH_PREFIX and CELL_STREAM_MAX_MESSAGE in cell-stream.[ch].
 LENGTH_PREFIX = 4
 MAX_MESSAGE = 64 * 1024 * 1024
+
 
 # The part of a wire header that describes the screen rather than the payload:
 # columns, lines, cursor position and visual state. It skips the magic, the

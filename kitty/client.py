@@ -258,6 +258,24 @@ class Client:
         """The grid a payload describes, read out of its header."""
         return tuple(struct.unpack_from('<HH', payload, 6))  # type: ignore[return-value]
 
+    def note_layout(self, os_windows: Any) -> None:
+        """Arrange windows the way the server does.
+
+        The client has its own enabled_layouts, and this deliberately ignores
+        them. A layout is how a session is arranged, so it belongs to the
+        server. A client that picked its own would draw a screen of one size
+        into a rectangle of another.
+        """
+        tab = self.boss.active_tab
+        if tab is None:
+            return
+        for osw in os_windows or ():
+            name = osw.get('layout')
+            if name and name != tab.current_layout.name:
+                tab._set_current_layout(name)
+                tab.relayout()
+            return
+
     def note_titles(self, os_windows: Any) -> None:
         for osw in os_windows or ():
             for w in osw.get('windows', ()):
@@ -332,6 +350,7 @@ class Client:
             return
         name = event.get('event')
         if name == 'os_windows':
+            self.note_layout(event.get('os_windows'))
             self.note_titles(event.get('os_windows'))
         elif name == 'superseded':
             log_error(f'Another client took this session: {event.get("client")}')

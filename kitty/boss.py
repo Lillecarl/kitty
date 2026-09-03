@@ -1175,6 +1175,7 @@ class Boss:
         client.os_window_id = os_window_id
         client.viewport = client.client_metrics(os_window_id)
         log_error(f'Attached to a kitty server speaking protocol {hello.get("protocol_version")}, cell wire {hello.get("cell_wire_version")}')
+        client.note_layout(hello.get('os_windows'))
         client.note_titles(hello.get('os_windows'))
         # Nothing else wakes this kitty: it has no children and the socket is
         # not in the event loop. A timer at the repaint interval reads it.
