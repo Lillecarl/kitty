@@ -103,13 +103,83 @@ KITTY_GLFW_MODULE hook is gone. Unlike `--start-as`=hidden it needs no display
 at all, and it pairs with `--listen-on`.
 
 Still open before a real client: `set-client-viewport` is the mechanism for the
-handshake, but no attach protocol carries it yet, and no cell data flows in the
-other direction.
+handshake, but no attach protocol carries it yet.
 
-Known gap: the server still loads fonts, because `create_os_window` derives
-window geometry from cell metrics. Spike 2 replaces that with client-supplied
-`(viewport_px, cell_px)`, after which the server needs no fonts at all, as §4
-intends.
+**Spike 3 has its first half: the cell wire format exists and round-trips.**
+
+`kitty/cell-wire.c` serializes a screen and reads the result back. There is no
+transport yet, on purpose — the format is the part that is hard to change once
+a peer exists, so it gets settled and tested alone. `kitty_tests/cell_wire.py`
+writes into one `Screen`, applies the payload to a second, and compares them
+cell by cell.
+
+The format is 18 bytes of header, then one record per line: the line
+attributes, a flat array of 24-byte cells, and a side table. A cell is six
+little-endian `uint32`s — the codepoint, the packed `CPUCell` flags, and
+`fg`/`bg`/`decoration_fg`/`attrs` from the `GPUCell`. Nothing is blitted,
+because C decides bitfield layout for itself (§3b).
+
+Three things do not go on the wire:
+
+- `sprite_idx`, because the client derives it when it shapes (§1). Four bytes
+  per cell, free.
+- **A TextCache index**, per §2. The codepoints go in the side table, keyed by
+  `x`, and the reader interns them with `tc_get_or_insert_chars`. Verified: `á`
+  ships as `(0x61, 0x301)` and a ZWJ emoji as `(0x1f469, 0x200d, 0x1f4bb)` in
+  both of the cells it covers.
+- **A hyperlink id**, which the plan did not anticipate. It has exactly the
+  TextCache disease — `remap_hyperlink_ids` (`hyperlink.c:100`) rewrites ids
+  across every live cell, and the pool GCs every 8192 adds. Worse, an id means
+  nothing without the pool. Version 1 sends zero and the attach protocol adds
+  the pool transfer (§7).
+
+Two decisions worth recording.
+
+**Serialization walks the linebuf, not the render traversal.** Step 3 below
+originally said to mirror `screen_update_cell_data`. That is wrong now:
+`scrolled_by`, the pixel-scroll offset and the overlay line are all *view*
+state, and the view belongs to the client. Server-side `scrolled_by` stays 0,
+so the traversal degenerates to plain iteration anyway. Walking rows
+`0..lines-1` drops the blank-line records, the overlay, and
+`FONTS_DATA_HANDLE` from the signature.
+
+**The serializer owns dirtiness.** `render()` returns at the top in server
+mode, so nothing else calls `linebuf_mark_line_clean` or resets the screen's
+dirty flags. A delta that did not clean up after itself would resend the whole
+screen every frame. The test that catches this asserts the *second* delta is a
+bare header. `cursor_has_moved` resends are gone with it, because they exist
+for ligatures under the cursor, which is shaping, which is client-side.
+
+**Dirtiness alone does not describe a frame, which the plan got wrong.**
+`linebuf_index` (`line-buf.c:365`) rotates `line_attrs` together with the
+lines, so a clean line that scrolls from y=5 to y=4 arrives clean at y=4.
+Normal kitty does not care, because `update_line_data` (`screen.c:4014`) sits
+*outside* the dirty check and re-uploads every line by position every frame.
+Dirtiness gates shaping there, not transmission. A delta that ships only dirty
+lines therefore misses `cat bigfile` entirely — the most common workload there
+is.
+
+The fix for v1 is a `content_moved` flag on `LineBuf`, set wherever lines
+change position without becoming dirty: the four rotation functions, the
+switch to the alternate screen, and rewrap. The serializer sends every line
+when it sees the flag, then clears it. Conservative and correct, and cheap on
+the wire, because consecutive frames of scrolling output repeat almost
+verbatim and the stream compressor eats that.
+
+The flag lives on `LineBuf`, not on `Screen`, which matters: `screen.c` swaps
+`self->linebuf` temporarily in half a dozen places and restores it. A flag
+attached to the buffer cannot be lost that way, and it catches every path that
+moves lines by construction, rather than by an audit that has to stay right.
+
+The real fix belongs to spike 4: a scroll record, so the client rotates its own
+linebuf. It converges with history streaming, because a line that scrolls off
+*is* a history append. Note that `cell_wire_serialize` resets
+`history_line_added_count`, which counts exactly the lines spike 4 has to ship.
+That delta must emit them before the reset.
+
+Known gap: `attrs.mark` is always zero, because `mark_text_in_line` runs in the
+render pass the server does not run. Marks are presentation config, so they
+belong on the client (§7).
 
 Unrelated to this work: two fish shell-integration tests fail in this checkout.
 fish 4.8.1 is newer than this kitty tag targets, and those tests exercise only
@@ -287,6 +357,10 @@ plus lines appended to history as they scroll off
 cursor/selection/scroll-offset, which are bytes.
 
 Nothing resends the world every frame.
+
+Correction from the implementation: this holds for editing in place, not for
+scrolling. Until a scroll record exists, a frame that scrolls sends every
+line, because line attributes move with their lines. See the spike 3 notes.
 
 ### One long-lived zlib stream, not per-message compression
 
@@ -576,12 +650,13 @@ handshake with a declared compatibility window, not a bare equality check.
    geometry for a window nobody displays, and layouts respond to a simulated
    resize.
 
-3. **Cell protocol, visible region only.** Serializer mirroring
-   `screen_update_cell_data`'s traversal (`render_line_for_virtual_y`,
-   scrollback, overlay line, pixel-scroll offset) emitting dirty lines as
-   (text, style); client reconstructs `Line`s and runs `render_line` locally.
-   Unix socket over SSH, two channels per §3. **Demo:** attach from a laptop,
-   see the remote shell, type, detach, reattach, state intact.
+3. **Cell protocol, visible region only.** *(format done, transport open)*
+   Serializer walking the linebuf and emitting dirty lines as (text, style);
+   the reader rebuilds `Line`s and runs `render_line` locally. The view
+   traversal is deliberately not mirrored — see the progress notes. Still to
+   come: the unix socket over SSH, the two channels per §3, the long-lived
+   zlib stream, and a real client on the far end. **Demo:** attach from a
+   laptop, see the remote shell, type, detach, reattach, state intact.
 
 4. **Client-side scrollback.** Compressed raw-array bulk transfer plus the
    codepoint side table for `ch_is_idx` cells (§2); background history
@@ -609,3 +684,13 @@ handshake with a declared compatibility window, not a bare equality check.
 3. Does keybinding config move wholesale to the client, or is it split (session
    actions server-side, presentation actions client-side)? §3b argues for
    client-side; the exact boundary needs drawing.
+4. How does the hyperlink pool reach the client? An id is meaningless without
+   it, and it renumbers, so the attach protocol needs an id-to-URL table and a
+   rule for incremental additions.
+5. Should the reader validate cell fields it cannot use? Version 1 trusts the
+   width, scale and alignment fields it is given. The transport is a unix
+   socket over SSH, so the sender is as trusted as the user, but a malformed
+   payload should still fail cleanly rather than draw nonsense.
+6. Where do marks live? `attrs.mark` comes from `mark_text_in_line`, which the
+   server does not run. Marker patterns are config, so the client can apply
+   them itself, but then a `scroll_to_next_mark` needs a client-side answer.
