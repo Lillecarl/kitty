@@ -105,3 +105,17 @@ class TestAttach(BaseTest):
         a.attach(peer_id=4, client='desktop', compression='zlib')
         with self.assertRaises(ProtocolError):
             a.open_channel(attachment.id, 3)
+
+    def test_an_uncompressed_channel_frames_both_ways(self):
+        a = Attachments()
+        attachment, _ = a.attach(peer_id=3, client='laptop', compression='none')
+        channel = a.open_channel(attachment.id, 3)
+        sent = [event_message({'event': 'text', 'text': 'hello'}), frame_message(1, b'cells'), b'']
+        wire = b''.join(channel.encode(m) for m in sent)
+        got = []
+        for i in range(0, len(wire), 3):
+            got.extend(bytes(x) for x in channel.receive(wire[i : i + 3]))
+        self.ae(got, sent)
+        # A frame that has not arrived in full yields nothing yet.
+        self.ae(channel.receive(struct.pack('<I', 4) + b'ab'), ())
+        self.ae([bytes(x) for x in channel.receive(b'cd')], [b'abcd'])

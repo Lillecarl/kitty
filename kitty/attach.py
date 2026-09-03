@@ -190,6 +190,13 @@ CHANNEL_PREAMBLE = b'KITTY-STREAM '
 MSG_CELLS = 1
 MSG_EVENT = 2
 
+# A frame in the stream is a length and then that many bytes. The compressed
+# stream writes the same prefix inside the deflate stream, so both directions
+# frame the same way and only the compression differs. These must agree with
+# LENGTH_PREFIX and CELL_STREAM_MAX_MESSAGE in cell-stream.[ch].
+LENGTH_PREFIX = 4
+MAX_MESSAGE = 64 * 1024 * 1024
+
 # Stop serializing when this much is already queued for the client. Cell
 # updates are idempotent, so the dirty state of each screen is the queue: skip
 # a tick and the next one sends the coalesced result.
@@ -231,6 +238,9 @@ class DataChannel:
         self.compressed = attachment.compression == 'zlib'
         self.writer = CellStreamWriter() if self.compressed else None
         self.reader = CellStreamReader() if self.compressed else None
+        # The tail of an uncompressed frame that has not arrived in full. The
+        # compressed reader keeps its own.
+        self.pending = b''
         # Windows this client has a full picture of. Anything else gets a
         # snapshot before it gets a delta.
         self.known: set[int] = set()
@@ -241,7 +251,7 @@ class DataChannel:
 
     def encode(self, message: bytes) -> bytes:
         if self.writer is None:
-            return struct.pack('<I', len(message)) + message
+            return struct.pack('<I', len(message)) + message  # LENGTH_PREFIX bytes
         return bytes(self.writer.write(message))
 
     def send(self, message: bytes) -> int:
@@ -255,6 +265,18 @@ class DataChannel:
         return int(push_data_to_peer(self.peer_id, b''))
 
     def receive(self, data: bytes) -> tuple[Any, ...]:
-        if self.reader is None:
-            return ()
-        return tuple(self.reader.feed(data))
+        if self.reader is not None:
+            return tuple(self.reader.feed(data))
+        # The uncompressed side of encode(). A socket splits and joins writes,
+        # so a read is not a frame.
+        self.pending += data
+        messages = []
+        while len(self.pending) >= LENGTH_PREFIX:
+            (length,) = struct.unpack_from('<I', self.pending)
+            if length > MAX_MESSAGE:
+                raise ProtocolError(f'The client sent a message of {length} bytes, the limit is {MAX_MESSAGE}')
+            if len(self.pending) < LENGTH_PREFIX + length:
+                break
+            messages.append(self.pending[LENGTH_PREFIX : LENGTH_PREFIX + length])
+            self.pending = self.pending[LENGTH_PREFIX + length :]
+        return tuple(messages)
