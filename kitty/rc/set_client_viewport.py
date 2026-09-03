@@ -99,39 +99,28 @@ Apply to the OS Window this command is run in, rather than the active one.
         }
 
     def response_from_kitty(self, boss: Boss, window: Window | None, payload_get: PayloadGetType) -> ResponseType:
+        from kitty.attach import ProtocolError, apply_client_viewport
         from kitty.constants import is_server_mode
-        from kitty.fast_data_types import get_os_window_size, set_os_window_cell_size
 
         if not is_server_mode():
             raise RemoteControlErrorWithoutTraceback(
                 'This kitty is not running in server mode, so it renders with its own fonts and derives the cell size from them'
             )
-        cw, ch = payload_get('cell_width'), payload_get('cell_height')
-        if (cw and cw < 1) or (ch and ch < 1):
-            raise RemoteControlErrorWithoutTraceback('Cell width and height must be positive')
         windows = self.windows_for_match_payload(boss, window, payload_get)
         for os_window_id in {w.os_window_id for w in windows if w}:
-            metrics = get_os_window_size(os_window_id)
-            if metrics is None:
-                raise RemoteControlErrorWithoutTraceback(f'The OS Window {os_window_id} does not exist')
-            if cw or ch:
-                # Zero means "leave unchanged", so fill the gap from the current metrics.
-                set_os_window_cell_size(
+            try:
+                apply_client_viewport(
+                    boss,
                     os_window_id,
-                    cw or metrics['cell_width'],
-                    ch or metrics['cell_height'],
-                    payload_get('dpi_x'),
-                    payload_get('dpi_y'),
+                    cell_width=payload_get('cell_width'),
+                    cell_height=payload_get('cell_height'),
+                    width=payload_get('width'),
+                    height=payload_get('height'),
+                    dpi_x=payload_get('dpi_x'),
+                    dpi_y=payload_get('dpi_y'),
                 )
-            width, height = payload_get('width'), payload_get('height')
-            if width or height:
-                boss.resize_os_window(os_window_id, width=width, height=height, unit='pixels', incremental=False, metrics=metrics)
-            # Relayout unconditionally. A viewport that happens to match the
-            # current one produces no resize event, so a cell size change under
-            # it would otherwise never reach the layout.
-            tm = boss.os_window_map.get(os_window_id)
-            if tm is not None:
-                tm.resize()
+            except ProtocolError as err:
+                raise RemoteControlErrorWithoutTraceback(str(err)) from err
         return None
 
 

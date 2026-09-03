@@ -21,6 +21,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include "cleanup.h"
+#include "cell-wire.h"
 #include "safe-wrappers.h"
 #include "control-codes.h"
 #include "wcswidth.h"
@@ -1003,6 +1004,7 @@ PyInit_fast_data_types(void) {
     s(BLINK, blink);
 #undef s
     PyModule_AddIntConstant(m, "MARK_MASK", MARK_MASK);
+    PyModule_AddIntMacro(m, CELL_WIRE_VERSION);
     PyModule_AddIntConstant(m, "DECORATION_MASK", DECORATION_MASK);
     PyModule_AddStringMacro(m, ERROR_PREFIX);
 #ifdef KITTY_VCS_REV
