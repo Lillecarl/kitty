@@ -213,6 +213,41 @@ backpressure as an optimization. It is a correctness rule: **do not serialize
 until the socket can take the output.** A reconnect is safe, because attach
 starts with a snapshot; backpressure inside a connection is not.
 
+**The attach handshake is in.** `kitty @ attach` is the exchange that gives a
+client the session. It rides the remote control socket, which SSH carries, so
+it inherits kitty's peer plumbing, its uid check and its own version refusal
+for free.
+
+The reply carries an attachment id, the agreed compression, kitty's version,
+`CELL_WIRE_VERSION`, and the geometry of every OS window *after* the client's
+metrics are applied. Verified headless: a client reporting 8x16 cells in
+1600x900 attaches and gets a 200x56 grid, a second client reporting 10x20 gets
+160x45 and is told it superseded attachment 1, a client one protocol version
+ahead is told to update the server and one behind to update the client, and an
+unknown compression method is refused by name.
+
+The exchange is uncompressed, per §5.6, because it is where compression is
+agreed.
+
+One trap, and it was not obvious. `framebuffer_size_callback`
+(`glfw.c:428`) does not resize. It starts a live resize and lets
+`process_pending_resizes` debounce it, which is right for a drag and wrong for
+a client: the grid still described the old viewport when the call returned, so
+the reply described a window the client was not getting. Server mode now
+updates the viewport in the callback. This is the same debounce §2 relies on
+for rewrap, so the distinction to keep is **a drag is debounced, a client
+report is not**.
+
+One visible consequence: the grid a server reports before any client attaches
+changed, because the geometry now settles during startup instead of one loop
+turn later. That number is a placeholder either way, since a client overrides
+it at attach. What matters is that it now agrees with the window it describes.
+
+Not yet: no cell data crosses the socket. The handshake settles versions,
+compression and geometry; the data channel that carries frames is the next
+piece. An attachment therefore outlives the short remote control connection
+that made it, and gets a real lifetime only when that channel exists.
+
 Known gap: `attrs.mark` is always zero, because `mark_text_in_line` runs in the
 render pass the server does not run. Marks are presentation config, so they
 belong on the client (§7).
@@ -531,7 +566,9 @@ have resented it for twenty years. That entire question disappears:
   runs, so stale `sprite_idx` values are harmless.
 - Attach sets the grid from the new client's `(viewport_px, cell_px)`, resizes,
   and delivers `SIGWINCH`.
-- Attaching while someone else is connected closes the incumbent's socket.
+- Attaching while someone else is connected supersedes the incumbent, which is
+  told so on its own data channel before the socket closes. A closed socket
+  alone cannot say why, and the reason is what the user needs.
 
 One design point falls out of "kick": the server must never block writing to a
 client that has stopped reading. Cell updates are **idempotent state** — a
@@ -539,6 +576,38 @@ dropped frame just means marking lines dirty and resending — so the render
 stream wants a bounded queue with drop-on-overflow (before compression, per §2).
 Clipboard replies, notifications and `kitty @` responses are **events** and must
 not be dropped. Two channels with different reliability semantics on one socket.
+
+### The shape that follows
+
+**A second connection to the same socket, not an RC response.** RC responses
+are JSON inside DCS framing, so every frame would pay base64 and JSON overhead
+— the reason cell data stayed out of the attach reply. One socket still serves
+both, because a single SSH forward then carries everything and the user
+configures one thing. The server tells them apart by the first bytes: an RC
+connection opens with `\x1bP@kitty-cmd`, so a data connection opens with a
+short uncompressed preamble naming the attachment id from the hello. The server
+answers uncompressed, and only then does either side start its `CellStream`.
+Nothing negotiable ever happens inside a stream. Identity needs no work of its
+own: `accept_peer` already checks the peer uid, and SSH owns the rest.
+
+**Two channels are two queueing disciplines, not two connections.** The
+length-prefixed message gains a type byte: cell frame or event. Events always
+queue. Cell frames obey §2's rule, and that rule needs no queue at all, because
+**the screen's dirty state already is the queue**. Under backpressure the
+server simply does not serialize; dirty lines and `content_moved` accumulate on
+their own, and one `serialize_cells` when the socket drains emits the
+coalesced result.
+
+The real cost of one stream is head-of-line blocking: a bulk history transfer
+ahead of an event delays it. So bulk transfers are chunked, which spike 4 needs
+anyway, and events interleave at message boundaries.
+
+**Three constraints for the implementation.** The talk thread must never touch
+a `Screen`: serialization and compression happen on the main thread, and
+finished bytes go to the peer write buffer the way `send_response_to_peer` does
+it. Backpressure is that buffer's level, read by the main thread before it
+serializes. The natural place to serialize is where `render()` returns early in
+server mode, because the existing tick machinery already paces it.
 
 ## 3a. Multiple OS windows — yes, and mostly for free
 
@@ -759,13 +828,13 @@ the hello succeeds.
    geometry for a window nobody displays, and layouts respond to a simulated
    resize.
 
-3. **Cell protocol, visible region only.** *(format and compression done,
-   transport open)* Serializer walking the linebuf and emitting dirty lines as
-   (text, style); the reader rebuilds `Line`s and runs `render_line` locally.
-   The view traversal is deliberately not mirrored — see the progress notes.
-   Still to come: the unix socket over SSH, the two channels per §3, and a real
-   client on the far end. **Demo:** attach from a laptop, see the remote shell,
-   type, detach, reattach, state intact.
+3. **Cell protocol, visible region only.** *(format, compression and handshake
+   done; the data channel is open)* Serializer walking the linebuf and emitting
+   dirty lines as (text, style); the reader rebuilds `Line`s and runs
+   `render_line` locally. The view traversal is deliberately not mirrored — see
+   the progress notes. Still to come: the channel that carries frames, and a
+   real client on the far end. **Demo:** attach from a laptop, see the remote
+   shell, type, detach, reattach, state intact.
 
 4. **Client-side scrollback.** Compressed raw-array bulk transfer plus the
    codepoint side table for `ch_is_idx` cells (§2); background history
