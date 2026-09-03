@@ -174,7 +174,10 @@ def os_window_geometry(boss: 'Boss', os_window_id: int) -> dict[str, Any]:
         'height': metrics.get('height', 0),
         'cell_width': metrics.get('cell_width', 0),
         'cell_height': metrics.get('cell_height', 0),
-        'windows': [w.id for tab in (tm or ()) for w in tab],
+        # Dicts, not bare ids: a title is not in the cell payload and it does
+        # not change per frame, so it belongs here. Per window layout lands
+        # here later the same way, without a new event.
+        'windows': [{'id': w.id, 'title': w.title} for tab in (tm or ()) for w in tab],
     }
 
 

@@ -70,6 +70,9 @@ class FakeClient:
         for w in os_windows:
             self.geometry[w['id']] = w
 
+    def titles(self):
+        return {w['id']: w['title'] for g in self.geometry.values() for w in g['windows']}
+
     def open_channel(self, attachment_id):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.settimeout(STARTUP_TIMEOUT)
@@ -207,6 +210,16 @@ class TestServerMode(BaseTest):
         client.send(text_event(window_id, "printf 'TYPED%sCLIENT' -BY-THE-"))
         client.send(key_event(window_id, GLFW_FKEY_ENTER))
         self.assertTrue(client.wait_for(lambda: typed in client.text()), f'The typing never reached the shell:\n{client.text()}')
+
+        # A title is not in the cell payload and does not change per frame, so
+        # it rides the OS window event. Set it here rather than from the shell,
+        # because a shell rewrites its own title at every prompt.
+        titled = 'TITLED-BY-THE-CLIENT'
+        client.rc('set-window-title', '--match', f'id:{window_id}', titled)
+        self.assertTrue(
+            client.wait_for(lambda: client.titles().get(window_id) == titled),
+            f'The title never reached the client: {client.titles()}',
+        )
 
         # Another client takes the session. This one is told why, rather than
         # just losing its socket.
