@@ -789,6 +789,14 @@ class Boss:
         self.child_monitor.add_child(window.id, window.child.pid, window.child.child_fd, window.screen)
         self.window_id_map[window.id] = window
 
+    def add_client_window(self, window: Window) -> None:
+        """Register a window that shows a server's screen.
+
+        There is no child to watch, so this only makes the window findable.
+        Its cells arrive on the data channel.
+        """
+        self.window_id_map[window.id] = window
+
     def _handle_remote_command(self, cmd: memoryview, window: Window | None = None, peer_id: int = 0) -> RCResponse:
         from .remote_control import is_cmd_allowed, parse_cmd, remote_control_allowed
 
@@ -1140,6 +1148,10 @@ class Boss:
             raise SystemExit(f'Could not attach to {self.args.attach}: {err}')
         self.client = client
         log_error(f'Attached to a kitty server speaking protocol {hello.get("protocol_version")}, cell wire {hello.get("cell_wire_version")}')
+        client.note_titles(hello.get('os_windows'))
+        # Nothing else wakes this kitty: it has no children and the socket is
+        # not in the event loop. A timer at the repaint interval reads it.
+        client.timer_id = add_timer(client.pump, get_options().repaint_delay / 1000.0, True)
 
     # }}}
 

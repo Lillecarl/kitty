@@ -15,11 +15,13 @@ instead of from a parser.
 
 import json
 import socket
+import struct
 from typing import TYPE_CHECKING, Any
 
-from .attach import CHANNEL_PREAMBLE, SERVER_PROTOCOL_VERSION, SUPPORTED_COMPRESSION, ProtocolError
+from .attach import CHANNEL_PREAMBLE, MSG_CELLS, MSG_EVENT, SERVER_PROTOCOL_VERSION, SUPPORTED_COMPRESSION, ProtocolError
 from .constants import appname
 from .fast_data_types import CellStreamReader, CellStreamWriter
+from .utils import log_error
 from .window import Window
 
 if TYPE_CHECKING:
@@ -101,6 +103,13 @@ class ClientWindow(Window):
     @property
     def title(self) -> str:
         return self.override_title or self.client_title or self.child_title
+
+    def resize_child(self, current_pty_size: tuple[int, int, int, int]) -> bool:
+        # There is no pty on this side. The server owns it, and hears about a
+        # resize as a viewport, in cells it decides for itself.
+        self.last_reported_pty_size = current_pty_size
+        self.child_is_launched = True
+        return False
 
 
 class Client:
@@ -213,10 +222,15 @@ class Client:
         if tab is None:
             return None
         window = ClientWindow(tab, StubChild(), self.boss.args)
-        tab._add_window(window)
-        self.windows[server_window_id] = window.id
         window.server_window_id = server_window_id
+        tab._add_window(window)
+        self.boss.add_client_window(window)
+        self.windows[server_window_id] = window.id
         return window
+
+    def grid_of(self, payload: bytes) -> tuple[int, int]:
+        """The grid a payload describes, read out of its header."""
+        return tuple(struct.unpack_from('<HH', payload, 6))  # type: ignore[return-value]
 
     def note_titles(self, os_windows: Any) -> None:
         for osw in os_windows or ():
@@ -224,5 +238,81 @@ class Client:
                 window = self.boss.window_id_map.get(self.windows.get(w.get('id', 0), 0))
                 if window is not None and w.get('title'):
                     window.client_title = str(w['title'])
+                    window.title_updated()
+
+    # }}}
+
+    # Taking the frames {{{
+
+    def read(self) -> tuple[bytes, ...]:
+        """Whatever the server has said since the last look."""
+        if self.channel is None:
+            return ()
+        chunks = []
+        while True:
+            try:
+                data = self.channel.recv(65536)
+            except BlockingIOError:
+                break
+            except OSError as err:
+                log_error(f'The connection to the kitty server failed: {err}')
+                self.close()
+                return ()
+            if not data:
+                log_error('The kitty server closed the connection')
+                self.close()
+                break
+            chunks.append(data)
+        data = self.pending + b''.join(chunks)
+        self.pending = b''
+        if not data:
+            return ()
+        if self.reader is not None:
+            return tuple(bytes(x) for x in self.reader.feed(data))
+        messages = []
+        while len(data) >= 4:
+            (length,) = struct.unpack_from('<I', data)
+            if len(data) < 4 + length:
+                break
+            messages.append(data[4 : 4 + length])
+            data = data[4 + length :]
+        self.pending = data
+        return tuple(messages)
+
+    def apply(self, message: bytes) -> None:
+        if not message:
+            return
+        if message[0] == MSG_CELLS:
+            server_window_id = struct.unpack_from('<I', message, 1)[0]
+            payload = message[5:]
+            window = self.window_for(server_window_id)
+            if window is None:
+                return
+            # The payload only fits the grid it was made for. The server lays
+            # out for this client, so a mismatch is the moment before that
+            # settles, not a disagreement.
+            columns, lines = self.grid_of(payload)
+            if (window.screen.columns, window.screen.lines) != (columns, lines):
+                window.screen.resize(lines, columns)
+            try:
+                window.screen.apply_serialized_cells(payload)
+            except ValueError as err:
+                log_error(f'Dropped a frame from the kitty server: {err}')
+        elif message[0] == MSG_EVENT:
+            self.event(json.loads(message[1:]))
+
+    def event(self, event: Any) -> None:
+        if not isinstance(event, dict):
+            return
+        name = event.get('event')
+        if name == 'os_windows':
+            self.note_titles(event.get('os_windows'))
+        elif name == 'superseded':
+            log_error(f'Another client took this session: {event.get("client")}')
+            self.close()
+
+    def pump(self, timer_id: int | None = None) -> None:
+        for message in self.read():
+            self.apply(message)
 
     # }}}
