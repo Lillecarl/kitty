@@ -142,11 +142,15 @@ static struct {
 
 void
 set_gpu_viewport(unsigned w, unsigned h) {
+    // Reached from the framebuffer size callback, which fires on resize even
+    // when there is no GL context.
+    if (global_state.is_server) return;
     glViewport(0, 0, w, h);
 }
 
 Viewport
 get_gpu_viewport(void) {
+    if (global_state.is_server) return (Viewport){0};
     GLsizei v[4];
     glGetIntegerv(GL_VIEWPORT, v);
     return (Viewport){.left = v[0], .top = v[1], .width = v[2], .height = v[3]};
@@ -154,6 +158,7 @@ get_gpu_viewport(void) {
 
 void
 save_viewport_using_bottom_left_origin(GLsizei newx, GLsizei newy, GLsizei width, GLsizei height) {
+    if (global_state.is_server) return;
     if (saved_viewports.used >= arraysz(saved_viewports.items)) fatal("Too many nested saved viewports");
     GLsizei *saved_viewport = saved_viewports.items[saved_viewports.used++];
     glGetIntegerv(GL_VIEWPORT, saved_viewport);
@@ -166,6 +171,7 @@ save_viewport_using_top_left_origin(GLsizei newx, GLsizei newy, GLsizei width, G
     // assumed to be in the usual co-ord system with origin at top left to the
     // OpenGL viewport co-ord system with origin at bottom left.
     // Use restore_viewport() to restore the viewport to what it was before.
+    if (global_state.is_server) return;
     if (saved_viewports.used >= arraysz(saved_viewports.items)) fatal("Too many nested saved viewports");
     GLsizei *saved_viewport = saved_viewports.items[saved_viewports.used++];
     glGetIntegerv(GL_VIEWPORT, saved_viewport);
@@ -175,6 +181,8 @@ save_viewport_using_top_left_origin(GLsizei newx, GLsizei newy, GLsizei width, G
 
 void
 restore_viewport(void) {
+    // Paired with the save functions above, so that the stack stays balanced.
+    if (global_state.is_server) return;
     if (!saved_viewports.used) fatal("Trying to restore a viewport when none is saved");
     GLsizei *saved_viewport = saved_viewports.items[--saved_viewports.used];
     glViewport(saved_viewport[0], saved_viewport[1], saved_viewport[2], saved_viewport[3]);

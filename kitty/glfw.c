@@ -31,6 +31,9 @@ static mouse_cursor cursors[GLFW_INVALID_CURSOR + 1] = {0};
 static void
 apply_swap_interval(int val) {
     (void)val;
+    // Swap interval needs a current context. Server mode has none, and the
+    // resize path reaches this.
+    if (global_state.is_server) return;
 #ifndef __APPLE__
     if (val < 0) val = OPT(sync_to_monitor) && !global_state.is_wayland ? 1 : 0;
     glfwSwapInterval(val);
