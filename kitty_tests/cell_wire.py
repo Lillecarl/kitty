@@ -3,6 +3,8 @@
 
 import struct
 
+from kitty.fast_data_types import CellStreamReader, CellStreamWriter
+
 from .base import BaseTest, parse_bytes
 
 # Layout constants from kitty/cell-wire.c. An update with no records is exactly
@@ -158,3 +160,54 @@ class TestCellWire(BaseTest):
         data = src.serialize_cells(True)
         with self.assertRaises(ValueError):
             dest.apply_serialized_cells(data[:-4])
+
+
+class TestCellStream(BaseTest):
+    def test_messages_round_trip(self):
+        w, r = CellStreamWriter(), CellStreamReader()
+        msgs = [b'', b'a', b'hello world', bytes(range(256)) * 40]
+        for m in msgs:
+            self.ae(r.feed(w.write(m)), (m,))
+
+    def test_framing_survives_any_chunking(self):
+        # A socket hands over whatever it has, so a message boundary and a read
+        # boundary have nothing to do with each other.
+        w, r = CellStreamWriter(), CellStreamReader()
+        msgs = [f'message number {i}'.encode() * (i + 1) for i in range(8)]
+        data = b''.join(w.write(m) for m in msgs)
+        got = []
+        for i in range(len(data)):
+            got.extend(r.feed(data[i : i + 1]))
+        self.ae(got, msgs)
+
+    def test_the_dictionary_is_reused_across_messages(self):
+        # One stream for the whole connection is the point: a repeated frame
+        # costs almost nothing after the first.
+        w = CellStreamWriter()
+        payload = b'prompt> some output line\n' * 40
+        sizes = [len(w.write(payload)) for _ in range(4)]
+        # 1000 bytes of repetitive text costs about 48 the first time and under
+        # 20 after that.
+        self.assertLess(sizes[1] * 2, sizes[0])
+        self.assertLess(sizes[-1], sizes[1] + 1)
+
+    def test_screen_updates_travel_over_the_stream(self):
+        src = self.create_screen(cols=80, lines=24)
+        dest = self.create_screen(cols=80, lines=24)
+        w, r = CellStreamWriter(), CellStreamReader()
+
+        parse_bytes(src, b'\x1b[32mhello\x1b[m from the server')
+        snapshot = src.serialize_cells(True)
+        for msg in r.feed(w.write(snapshot)):
+            dest.apply_serialized_cells(msg)
+        self.ae(str(src.line(0)).rstrip(), str(dest.line(0)).rstrip())
+
+        # A blank 80x24 screen is the easiest thing there is to compress.
+        self.assertLess(len(w.write(snapshot)) * 100, len(snapshot))
+
+        for i in range(30):
+            parse_bytes(src, f'\r\nline {i}'.encode())
+            for msg in r.feed(w.write(src.serialize_cells())):
+                dest.apply_serialized_cells(msg)
+        for y in range(src.lines):
+            self.ae(str(src.line(y)), str(dest.line(y)))

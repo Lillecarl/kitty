@@ -37,6 +37,9 @@ typedef struct CellWireBuf {
 } CellWireBuf;
 
 void cell_wire_buf_free(CellWireBuf *buf);
+// Make room for extra more bytes past used. Sets a Python error and returns
+// false if the allocation fails.
+bool cell_wire_buf_reserve(CellWireBuf *buf, size_t extra);
 
 // Serialize the screen's linebuf into buf. A snapshot holds every line. A
 // delta holds only the dirty lines, and marks them clean.

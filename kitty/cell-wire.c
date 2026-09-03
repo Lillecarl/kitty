@@ -37,8 +37,8 @@ cell_wire_buf_free(CellWireBuf *buf) {
     buf->capacity = 0;
 }
 
-static bool
-ensure_space(CellWireBuf *buf, size_t extra) {
+bool
+cell_wire_buf_reserve(CellWireBuf *buf, size_t extra) {
     if (buf->capacity - buf->used >= extra) return true;
     size_t needed = buf->used + extra;
     size_t cap = buf->capacity ? buf->capacity : 4096;
@@ -145,7 +145,7 @@ unpack_flags(CPUCell *c, uint32_t f) {
 static bool
 serialize_line(Screen *screen, index_type y, const Line *line, CellWireBuf *buf, ListOfChars *lc) {
     const index_type columns = line->xnum;
-    if (!ensure_space(buf, 2u + 1u + columns * CELL_SIZE + 2u)) return false;
+    if (!cell_wire_buf_reserve(buf, 2u + 1u + columns * CELL_SIZE + 2u)) return false;
     write_u16(buf, (uint16_t)y);
     LineAttrs attrs = line->attrs;
     attrs.has_dirty_text = false; // dirtiness is server bookkeeping
@@ -167,7 +167,7 @@ serialize_line(Screen *screen, index_type y, const Line *line, CellWireBuf *buf,
         const CPUCell *c = line->cpu_cells + x;
         if (!c->ch_is_idx) continue;
         tc_chars_at_index(screen->text_cache, c->ch_or_idx, lc);
-        if (!ensure_space(buf, 2u + 1u + lc->count * 4u)) return false;
+        if (!cell_wire_buf_reserve(buf, 2u + 1u + lc->count * 4u)) return false;
         write_u16(buf, (uint16_t)x);
         write_u8(buf, (uint8_t)lc->count);
         for (size_t i = 0; i < lc->count; i++) write_u32(buf, lc->chars[i]);
@@ -187,7 +187,7 @@ cell_wire_serialize(Screen *screen, bool snapshot, CellWireBuf *buf) {
     // stream compressor is for.
     const bool all_lines = snapshot || screen->linebuf->content_moved;
     buf->used = 0;
-    if (!ensure_space(buf, HEADER_SIZE)) return false;
+    if (!cell_wire_buf_reserve(buf, HEADER_SIZE)) return false;
     write_u32(buf, CELL_WIRE_MAGIC);
     write_u8(buf, CELL_WIRE_VERSION);
     write_u8(buf, all_lines ? CELL_WIRE_SNAPSHOT : 0u);

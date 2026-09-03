@@ -892,6 +892,8 @@ extern int init_Cursor(PyObject *);
 extern int init_Shlex(PyObject *);
 extern int init_Parser(PyObject *);
 extern int init_DiskCache(PyObject *);
+extern int init_CellStreamWriter(PyObject *);
+extern int init_CellStreamReader(PyObject *);
 extern bool init_child_monitor(PyObject *);
 extern int init_Line(PyObject *);
 extern int init_ColorProfile(PyObject *);
@@ -952,6 +954,8 @@ PyInit_fast_data_types(void) {
     if (!init_Shlex(m)) return NULL;
     if (!init_Parser(m)) return NULL;
     if (!init_DiskCache(m)) return NULL;
+    if (!init_CellStreamWriter(m)) return NULL;
+    if (!init_CellStreamReader(m)) return NULL;
     if (!init_child_monitor(m)) return NULL;
     if (!init_ColorProfile(m)) return NULL;
     if (!init_Screen(m)) return NULL;
