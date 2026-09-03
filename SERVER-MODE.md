@@ -23,6 +23,14 @@ persistence, but the client must be kitty, not an arbitrary terminal.
 - **Compression is zlib**, already a hard dependency of kitty, as one long-lived
   stream per connection (§2).
 - **Wire format ships cells, not sprites and not escape codes** (§4).
+- **Config authority is split.** The client mandates the front end: fonts,
+  keybindings, colors and the rest of presentation. The server keeps what only
+  it can own — the PTY, shell integration, `scrollback_lines`, and the layout
+  config that §5.1 keeps server-side. §5.2 draws the line.
+- **The protocol carries versions and negotiates them** (§5.6). Not lockstep.
+- **Upstreaming is a goal.** So the protocol follows kitty's own conventions
+  and gets a `docs/*-protocol.rst` of its own, and nothing in it is
+  tmux-shaped (§1, §4).
 
 ## Progress
 
@@ -319,11 +327,55 @@ with different fonts than the last one".
 - `Screen` is already constructed headlessly in tests against a pure-Python
   callbacks object (`kitty_tests/base.py:48, 300-303`).
 
-### Upstream wants this
+### Where upstream stands
 
-`docs/faq.rst:449-451`: multiplexers are "a bad idea", kitty does everything
-tmux does "but better, with the exception of remote persistence (issue 391)".
-The acknowledged gap, not a fight against the grain.
+`docs/faq.rst:449-451` still names this as the one thing tmux does that kitty
+does not. Issue 391 is the thread behind that line. It is worth reading before
+planning any upstream contact, because the picture has three phases.
+
+**2018-2021: the maintainer intended to build this himself, and asked for
+help.** The issue carries the `help wanted` label to this day. He described
+this exact architecture as the price of doing it properly:
+
+> a daemon would need to either preserve all output or maintain its own
+> internal terminal with no rendering, at which point it is basically a
+> terminal emulator itself.
+
+That is a statement of cost, not an objection, and it is a cost this work has
+now paid. He was explicit about wanting it:
+
+> Someday, I will get around to implementing a daemon for persistence of tty
+> sessions in kitty. That will be more robust, feature-rich and efficient than
+> any terminal multiplexer. [...] if you are willing to work on such a daemon,
+> or you have ideas about how it should work, I am happy to hear from you
+
+**2021: the issue closed, and not because the feature was refused.** The thread
+turned abusive and he ended it with "This thread is now an unmitigated waste of
+my time". GitHub records the close as "completed"; nothing shipped. Do not post
+on 391.
+
+**2026: he now points people at third-party tools.** In discussion 10153, June
+2026, he recommends close-confirmation for local use and names `dtach` and
+`abduco` for remote. He does not repeat the plan to build a daemon.
+
+So the honest reading: the invitation to contributors was never withdrawn, but
+it is old, and the current answer to "how do I get persistence" is "use
+something else". A design document and a working demo are the only things that
+can reopen the question. Two constraints follow, and this design already meets
+both. Nothing may be tmux-shaped — he refused even to host a tmux fork in the
+repository — and the daemon must be a real terminal with no rendering rather
+than a re-serializer, which is §4's decision.
+
+One more line of his shapes the protocol:
+
+> a daemon can easily allow read-only access to a particular window by multiple
+> clients
+
+Single client is this project's v1 scope (§3), and it stays that way. But the
+protocol must not *assume* one client in its shape. So the hello gives each
+attachment an id, and kicking the incumbent is server policy sent as an
+explicit "superseded" message, not an implicit close that only one client can
+make sense of.
 
 ---
 
@@ -608,13 +660,23 @@ drag-and-drop).
 
 ### 5.2 Config split
 
-`font_family`, `font_size`, `background_opacity`, decorations, cursor blink and
-`repaint_delay` are client properties. Scrollback, shell integration and
-`allow_remote_control` are session properties. Keybindings are client properties
-(§3b). Colors are ambiguous: the profile must live server-side because OSC
-4/10/11 queries need answering and SGR must resolve — but users want per-client
-themes. The tagged encoding means per-client theming works for palette-index
-cells and not true-color ones, which is defensible but needs documenting.
+**Settled: the client mandates the front end.** Everything the user sees and
+touches is the client's `kitty.conf`: `font_family`, `font_size`, keybindings
+(§3b), colors, `background_opacity`, decorations, cursor blink and
+`repaint_delay`. This is what a user expects once one server serves several
+machines — the laptop's fonts and bindings should follow the laptop.
+
+The server keeps only what it alone can own: the PTY and its environment, shell
+integration, `scrollback_lines`, `allow_remote_control`, and the layout config,
+because layout runs server-side in pixels (§5.1).
+
+Colors need one more rule. The profile lives server-side, because `OSC 4`,
+`10` and `11` queries need answering and SGR has to resolve. The tagged
+encoding (§1) means the client can theme palette-index cells freely and
+true-color cells not at all, which is the right split. What is still open is
+what happens when a child program *changes* a color at runtime: that is
+server-side state the client has to be told about, and it has to interact with
+the client's own palette in a defined way. See §7.
 
 ### 5.3 Client-side services become RPCs
 
@@ -655,11 +717,30 @@ needs per-link tuning. Predictive echo is an explicit non-goal.
 The compensation: because scrollback is client-side, *scrolling* has zero
 latency, which is the interaction where tmux over a slow link feels worst.
 
-### 5.6 Version lockstep
+### 5.6 Versions
 
-The protocol carries internal-ish structures, so client and server need matching
-or negotiated versions. tmux has this and users hate it. Design a real version
-handshake with a declared compatibility window, not a bare equality check.
+**Settled: the protocol negotiates, it does not demand lockstep.** tmux demands
+lockstep and users hate it. Two layers carry versions, and both follow a
+pattern kitty already uses.
+
+**The hello is JSON, and it is version-tolerant by construction.** Unknown
+fields are ignored, so a field added later costs an older peer nothing. Each
+side declares its kitty version and its protocol version. The refusal rule
+copies remote control: `handle_cmd` (`remote_control.py:217-222`) compares
+major and minor and refuses only a peer *newer* than itself, with an error that
+says which side to update. An older peer is served.
+
+**The binary layer declares its version in the hello and must match in v1.**
+`CELL_WIRE_VERSION` is already a byte on every payload. This is the
+`RC_ENCRYPTION_PROTOCOL_VERSION = '1'` pattern (`constants.py:31`): an explicit
+protocol number that moves independently of kitty's own version. A
+compatibility window can arrive later without changing the shape of the
+handshake, which is the point of declaring it there.
+
+**The hello must be uncompressed.** Compression is itself negotiated — the
+hello names `"zlib"` so `zstd` can be added later (§2) — so the exchange cannot
+happen inside the compressed stream. Both sides start their streams only after
+the hello succeeds.
 
 ---
 
@@ -706,19 +787,22 @@ handshake with a declared compatibility window, not a bare equality check.
 
 ## 7. Open questions
 
-1. Where does `kitty.conf` get read, and what is authoritative for colors?
-2. Is protocol version lockstep acceptable, or is a compatibility window
-   required?
-3. Does keybinding config move wholesale to the client, or is it split (session
-   actions server-side, presentation actions client-side)? §3b argues for
-   client-side; the exact boundary needs drawing.
-4. How does the hyperlink pool reach the client? An id is meaningless without
+Questions 1 to 3 are answered. Config authority is split, the client mandating
+the front end; the protocol carries versions rather than demanding lockstep;
+keybindings are client-side. All three are in Settled decisions above.
+
+1. Colors are client presentation, and the wire passes tagged colors through
+   (§1), so per-client theming is free. But `OSC 4`, `10` and `11` let a
+   *server-side* child program change them at runtime. Those changes have to
+   reach the client as state, and it needs a rule for how they interact with
+   the client's own palette.
+2. How does the hyperlink pool reach the client? An id is meaningless without
    it, and it renumbers, so the attach protocol needs an id-to-URL table and a
    rule for incremental additions.
-5. Should the reader validate cell fields it cannot use? Version 1 trusts the
+3. Should the reader validate cell fields it cannot use? Version 1 trusts the
    width, scale and alignment fields it is given. The transport is a unix
    socket over SSH, so the sender is as trusted as the user, but a malformed
    payload should still fail cleanly rather than draw nonsense.
-6. Where do marks live? `attrs.mark` comes from `mark_text_in_line`, which the
+4. Where do marks live? `attrs.mark` comes from `mark_text_in_line`, which the
    server does not run. Marker patterns are config, so the client can apply
    them itself, but then a `scroll_to_next_mark` needs a client-side answer.
